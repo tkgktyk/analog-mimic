@@ -3241,7 +3241,7 @@
 	)
 	(text "3mA at 5V"
 		(exclude_from_sim no)
-		(at 198.374 149.352 0)
+		(at 99.314 121.412 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -4079,6 +4079,16 @@
 	)
 	(wire
 		(pts
+			(xy 109.22 96.52) (xy 109.22 105.41)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "9bbf321a-660d-4b3a-862f-91c3672eaab4")
+	)
+	(wire
+		(pts
 			(xy 199.39 83.82) (xy 194.31 83.82)
 		)
 		(stroke
@@ -4189,7 +4199,7 @@
 	)
 	(wire
 		(pts
-			(xy 208.28 153.67) (xy 208.28 156.21)
+			(xy 109.22 125.73) (xy 109.22 128.27)
 		)
 		(stroke
 			(width 0)
@@ -4349,13 +4359,13 @@
 	)
 	(wire
 		(pts
-			(xy 208.28 130.81) (xy 208.28 133.35)
+			(xy 128.27 96.52) (xy 109.22 96.52)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "d1f4fd26-d879-48e7-b7fb-c4a242533b1f")
+		(uuid "d083a47b-474d-4102-9b30-9ffca257929a")
 	)
 	(wire
 		(pts
@@ -4489,7 +4499,7 @@
 	)
 	(wire
 		(pts
-			(xy 208.28 140.97) (xy 208.28 143.51)
+			(xy 109.22 113.03) (xy 109.22 115.57)
 		)
 		(stroke
 			(width 0)
@@ -5097,7 +5107,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 208.28 156.21 0)
+		(at 109.22 128.27 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -5106,7 +5116,7 @@
 		(fields_autoplaced yes)
 		(uuid "0e189260-f059-4cd9-acab-d29bf4d841f1")
 		(property "Reference" "#PWR034"
-			(at 208.28 162.56 0)
+			(at 109.22 134.62 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5115,7 +5125,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 208.28 161.29 0)
+			(at 109.22 133.35 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5123,7 +5133,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 208.28 156.21 0)
+			(at 109.22 128.27 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5132,7 +5142,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 208.28 156.21 0)
+			(at 109.22 128.27 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5141,7 +5151,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 208.28 156.21 0)
+			(at 109.22 128.27 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5518,72 +5528,6 @@
 		)
 	)
 	(symbol
-		(lib_id "power:VDD")
-		(at 208.28 130.81 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "28604f14-d352-45bf-9d97-691b1db9e306")
-		(property "Reference" "#PWR033"
-			(at 208.28 134.62 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Value" "VCC"
-			(at 208.28 125.73 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 208.28 130.81 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 208.28 130.81 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"VDD\""
-			(at 208.28 130.81 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "92d88972-3ac9-4e0e-a2b1-e1bdeba1bd4a")
-		)
-		(instances
-			(project "mimic01"
-				(path "/81d4f99a-e1be-4b43-a72c-4e3cf645dbd8"
-					(reference "#PWR033")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "EasyEDA:AO3401A")
 		(at 255.27 138.43 270)
 		(mirror x)
@@ -5907,7 +5851,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 208.28 137.16 180)
+		(at 109.22 109.22 180)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -5916,7 +5860,7 @@
 		(fields_autoplaced yes)
 		(uuid "34f8a940-7b25-454d-881a-bdf966f650ea")
 		(property "Reference" "R14"
-			(at 210.82 135.8899 0)
+			(at 111.76 107.9499 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5925,7 +5869,7 @@
 			)
 		)
 		(property "Value" "1k"
-			(at 210.82 138.4299 0)
+			(at 111.76 110.4899 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5934,7 +5878,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 210.058 137.16 90)
+			(at 110.998 109.22 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5943,7 +5887,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 208.28 137.16 0)
+			(at 109.22 109.22 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5952,7 +5896,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 208.28 137.16 0)
+			(at 109.22 109.22 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5960,8 +5904,8 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC Part" "C173697"
-			(at 208.28 137.16 0)
+		(property "LCSC Part" "C11702"
+			(at 109.22 109.22 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7667,7 +7611,7 @@
 	)
 	(symbol
 		(lib_id "EasyEDA:KT-0603R")
-		(at 207.01 148.59 90)
+		(at 107.95 120.65 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -7676,7 +7620,7 @@
 		(fields_autoplaced yes)
 		(uuid "8fb05dac-75b5-43aa-ab9e-67b3fda325ad")
 		(property "Reference" "LED1"
-			(at 212.09 148.5899 90)
+			(at 113.03 120.6499 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7685,7 +7629,7 @@
 			)
 		)
 		(property "Value" "KT-0603R"
-			(at 212.09 151.1299 90)
+			(at 113.03 123.1899 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7694,7 +7638,7 @@
 			)
 		)
 		(property "Footprint" "EasyEDA:LED-SMD_L1.6-W0.8-R-RD"
-			(at 215.9 148.59 0)
+			(at 116.84 120.65 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7703,7 +7647,7 @@
 			)
 		)
 		(property "Datasheet" "https://lcsc.com/product-detail/Light-Emitting-Diodes-LED_Red-LED-0603_C2286.html"
-			(at 218.44 148.59 0)
+			(at 119.38 120.65 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7712,7 +7656,7 @@
 			)
 		)
 		(property "Description" "0603"
-			(at 231.14 148.59 0)
+			(at 132.08 120.65 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7721,7 +7665,7 @@
 			)
 		)
 		(property "Manufacturer" "KENTO"
-			(at 220.98 148.59 0)
+			(at 121.92 120.65 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7730,7 +7674,7 @@
 			)
 		)
 		(property "MPN" "KT-0603R"
-			(at 223.52 148.59 0)
+			(at 124.46 120.65 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7739,7 +7683,7 @@
 			)
 		)
 		(property "LCSC Part" "C2286"
-			(at 226.06 148.59 0)
+			(at 127 120.65 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -8350,9 +8294,9 @@
 		(at 194.31 68.58 270)
 		(unit 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
-		(dnp no)
+		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "bac9377c-e260-4696-80ff-3524d4cc8ed1")
 		(property "Reference" "TP1"
@@ -8517,7 +8461,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Connector_PinSocket_2.54mm:PinSocket_1x05_P2.54mm_Vertical"
+		(property "Footprint" "EasyEDA:PinSocket_1x05_P2.54mm_Vertical_DIY"
 			(at 119.38 182.88 0)
 			(effects
 				(font

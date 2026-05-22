@@ -21,17 +21,19 @@ _autosave-*
 *fp-info-cache
 ~*.lck
 *.lck
-/hardware/**/*.pro
+/hardware/mimic0x/mimic0x/**/*.pro
 
-/hardware/**/*.net
-/hardware/**/*.ipc
-/hardware/**/*.csv
-/hardware/**/*.pdf
-/hardware/**/*.gerber
-/hardware/**/*.gbr
-/hardware/**/*.drl
-/hardware/**/*.zip
-/hardware/**/production/
+/hardware/mimic0x/**/*.net
+/hardware/mimic0x/**/*.ipc
+/hardware/mimic0x/**/*.csv
+/hardware/mimic0x/**/*.pdf
+/hardware/mimic0x/**/*.gerber
+/hardware/mimic0x/**/*.gbr
+/hardware/mimic0x/**/*.drl
+/hardware/mimic0x/**/*.zip
+/hardware/mimic0x/**/production/
+
+/hardware/assembly/
 
 # Python
 __pycache__/
