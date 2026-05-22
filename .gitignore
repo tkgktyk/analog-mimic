@@ -19,19 +19,19 @@ idea.md
 *backups/
 _autosave-*
 *fp-info-cache
-*.pro
 ~*.lck
 *.lck
+/hardware/**/*.pro
 
-*.net
-*.ipc
-*.csv
-*.pdf
-*.gerber
-*.gbr
-*.drl
-*.zip
-production/
+/hardware/**/*.net
+/hardware/**/*.ipc
+/hardware/**/*.csv
+/hardware/**/*.pdf
+/hardware/**/*.gerber
+/hardware/**/*.gbr
+/hardware/**/*.drl
+/hardware/**/*.zip
+/hardware/**/production/
 
 # Python
 __pycache__/
@@ -54,7 +54,7 @@ desktop.ini
 *.swp
 
 # Arduino
-software/Mimic/src/mimic_registers.h
+/software/Mimic/src/mimic_registers.h
 
 # PlatformIO (Safety Net)
 .pio/
