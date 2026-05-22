@@ -1,3 +1,26 @@
+/**
+ ******************************************************************************
+ * @file    mimic_device.c
+ * @author  TAKAGI Katsuyuki
+ * @brief   Implementation of Global Device Context, Subsystem Initialization, 
+ * and Thread-Safe Critical Section Accessor Routines.
+ *-----------------------------------------------------------------------------
+ * Copyright (C) 2026 TAKAGI Katsuyuki
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ ******************************************************************************
+ */
+
 #include "mimic_device.h"
 #include "py32f0xx_hal.h"
 #include "mimic_dsp.h"

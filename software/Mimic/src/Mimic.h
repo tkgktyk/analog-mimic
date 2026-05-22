@@ -1,3 +1,17 @@
+/**
+ ******************************************************************************
+ * @file    Mimic.h
+ * @author  TAKAGI Katsuyuki
+ * @brief   Host-Side Helper Functions and Arduino Library API for 
+ * Communicating with the Analog Mimic Hardware via I2C.
+ *-----------------------------------------------------------------------------
+ * Copyright (C) 2026 TAKAGI Katsuyuki
+ *
+ * This software is released under the MIT License.
+ * https://opensource.org/licenses/MIT
+ ******************************************************************************
+ */
+
 #ifndef MIMIC_H
 #define MIMIC_H
 

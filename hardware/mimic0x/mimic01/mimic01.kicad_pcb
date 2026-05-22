@@ -7,6 +7,11 @@
 		(legacy_teardrops no)
 	)
 	(paper "A4")
+	(title_block
+		(comment 1 "License: CERN-OHL-S-2.0")
+		(comment 2 "Copyright (C) 2026 TAKAGI Katsuyuki")
+		(comment 3 "Project: Analog Mimic")
+	)
 	(layers
 		(0 "F.Cu" signal)
 		(2 "B.Cu" signal)
@@ -9228,6 +9233,18 @@
 				(thickness 0.15)
 			)
 			(justify left mirror)
+		)
+	)
+	(gr_text "© 2026 K. TAKAGI\nCERN-OHL-S-2.0"
+		(at 143.396 108.763 0)
+		(layer "B.SilkS")
+		(uuid "746aea96-2916-4fe2-8309-18f79f48a8a7")
+		(effects
+			(font
+				(size 0.8 0.8)
+				(thickness 0.12)
+			)
+			(justify left bottom mirror)
 		)
 	)
 	(gr_text "V"

@@ -1,3 +1,26 @@
+/**
+ ******************************************************************************
+ * @file    mimic_dsp.c
+ * @author  TAKAGI Katsuyuki
+ * @brief   Implementation of the Core Emulation Engines, Q15 Fixed-Point DSP 
+ * Routines, and Deterministic Operational Mode Execution Blocks.
+ *-----------------------------------------------------------------------------
+ * Copyright (C) 2026 TAKAGI Katsuyuki
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ ******************************************************************************
+ */
+
 #include "mimic_dsp.h"
 #include "py32f0xx_hal.h"
 #include "mimic_device.h"

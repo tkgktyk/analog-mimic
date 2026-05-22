@@ -1,3 +1,17 @@
+/**
+ ******************************************************************************
+ * @file    Mimic.c
+ * @author  TAKAGI Katsuyuki
+ * @brief   Implementation of Host-Side Helper Functions, I2C Command Packet 
+ * Serialization, and Register-Mapping Wrapper APIs.
+ *-----------------------------------------------------------------------------
+ * Copyright (C) 2026 TAKAGI Katsuyuki
+ *
+ * This software is released under the MIT License.
+ * https://opensource.org/licenses/MIT
+ ******************************************************************************
+ */
+
 #include "Mimic.h"
 #include <math.h>
 

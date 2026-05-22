@@ -4,6 +4,11 @@
 	(generator_version "9.0")
 	(uuid "81d4f99a-e1be-4b43-a72c-4e3cf645dbd8")
 	(paper "A4")
+	(title_block
+		(comment 1 "License: CERN-OHL-S-2.0")
+		(comment 2 "Copyright (C) 2026 TAKAGI Katsuyuki")
+		(comment 3 "Project: Analog Mimic")
+	)
 	(lib_symbols
 		(symbol "Connector_Generic:Conn_01x03"
 			(pin_names
