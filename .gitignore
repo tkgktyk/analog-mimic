@@ -1,0 +1,61 @@
+# C/C++
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.map
+build/
+*.d
+
+*.log
+idea.md
+
+# KiCad
+*.bak
+*.bck
+*.kicad_pcb-bak
+*.kicad_sch-bak
+*backups/
+_autosave-*
+*fp-info-cache
+*.pro
+~*.lck
+*.lck
+
+*.net
+*.ipc
+*.csv
+*.pdf
+*.gerber
+*.gbr
+*.drl
+*.zip
+production/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+._*
+.Spotlight-V100
+.Trashes
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Arduino
+software/Mimic/src/mimic_registers.h
+
+# PlatformIO (Safety Net)
+.pio/
+.pioenvs/

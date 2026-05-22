@@ -1,0 +1,93 @@
+#include "mimic_device.h"
+#include "py32f0xx_hal.h"
+#include "mimic_dsp.h"
+
+/**
+ * @brief  Executes a code block with interrupts disabled, restoring the original 
+ * interrupt state (PRIMASK) upon completion.
+ * @note   This macro handles the nested state preservation safely within a do-while block.
+ */
+#define CRITICAL_SECTION_BLOCK(block_code) do { \
+    uint32_t __primask_save = __get_PRIMASK();  \
+    __disable_irq();                            \
+    { block_code }                              \
+    __set_PRIMASK(__primask_save);              \
+} while(0)
+
+// =========================================================
+// Global Device State Instantiation
+// =========================================================
+// Defines and initializes the single, system-wide global device state structure.
+MimicDevice_t mimic_device = {
+    .registers = {0},
+    .status = 0x00,
+    .adc_val = 2048, // Initialized to mid-scale analog ground (Vref/2) for safety
+    .cpu_cycles_max = 0,
+    .i2c_dirty_flag = 0};
+
+// =========================================================
+// Thread-Safe State Management APIs
+// =========================================================
+
+/**
+ * @brief Thread-safe setter for status flags.
+ * Prevents data races when multiple interrupts try to update the status
+ * register simultaneously.
+ */
+void MimicDevice_SetStatusFlag(uint8_t flag) {
+  CRITICAL_SECTION_BLOCK(
+    mimic_device.status |= flag;
+  );
+}
+
+
+/**
+ * @brief Retrieves the status and clears transient error flags atomically.
+ * Called primarily when the I2C master reads the STATUS register.
+ */
+uint8_t MimicDevice_GetAndClearStatus(void) {
+  uint8_t current_status;
+  
+  CRITICAL_SECTION_BLOCK(
+    current_status = mimic_device.status;
+    // Retain active state flags (e.g., SYS_READY) but clear transient errors
+    mimic_device.status &= MIMIC_STATUS_STATE_MASK;
+  );  
+
+  return current_status;
+}
+
+/**
+ * @brief Retrieves the latest ADC converted value.
+ */
+uint16_t MimicDevice_GetAdcVal(void) {
+  // A 16-bit aligned read access is atomic on a 32-bit architecture;
+  // therefore, disabling interrupts is unnecessary here.
+  return mimic_device.adc_val;
+}
+
+/**
+ * @brief Retrieves the maximum CPU cycle count and resets the peak-hold tracker.
+ */
+uint16_t MimicDevice_GetAndClearCpuCyclesMax(void) {
+  uint16_t max_cycles;
+
+  CRITICAL_SECTION_BLOCK(
+    max_cycles = mimic_device.cpu_cycles_max;
+    mimic_device.cpu_cycles_max = 0; // Reset upon retrieval
+  );
+
+  return max_cycles;
+}
+
+/**
+ * @brief  Acknowledges the completion of the I2C parameter update transaction.
+ */
+bool MimicDevice_AcknowledgeUpdate(void) {
+  CRITICAL_SECTION_BLOCK(
+    mimic_device.i2c_dirty_flag = 0;
+    mimic_device.cpu_cycles_max = 0;
+  );
+
+  return ((MimicDSP_GetOutputOpenStateFromSnapshot() & MIMIC_FLAG_OUT_OPEN) != 0);
+}
