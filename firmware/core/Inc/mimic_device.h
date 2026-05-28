@@ -57,6 +57,25 @@ typedef struct {
 extern MimicDevice_t mimic_device;
 
 // =========================================================
+// Parameter Decoding Utilities (Big-Endian)
+// =========================================================
+
+/**
+ * @brief Retrieves an unsigned 16-bit parameter from the device registry.
+ */
+static inline __attribute__((always_inline)) uint16_t MimicDevice_GetRegU16(uint8_t start_reg) {
+    return (uint16_t)((mimic_device.registers[start_reg] << 8) | mimic_device.registers[start_reg + 1]);
+}
+
+/**
+ * @brief Retrieves a signed 16-bit parameter with guaranteed sign extension.
+ */
+static inline __attribute__((always_inline)) int32_t MimicDevice_GetRegS16(uint8_t start_reg) {
+    return (int32_t)(int16_t)((mimic_device.registers[start_reg] << 8) | mimic_device.registers[start_reg + 1]);
+}
+
+
+// =========================================================
 // Thread-Safe Accessor APIs
 // =========================================================
 

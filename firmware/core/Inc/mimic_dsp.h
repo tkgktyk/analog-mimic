@@ -53,6 +53,8 @@ void MimicDSP_UpdateParameters(void);
  */
 bool MimicDSP_GetOutputOpenStateFromSnapshot(void);
 
+void MimicDSP_SetDecimation(uint8_t N);
+
 #ifdef __cplusplus
 }
 #endif

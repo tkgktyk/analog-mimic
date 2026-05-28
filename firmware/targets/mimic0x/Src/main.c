@@ -24,9 +24,10 @@
 #include "py32f0xx_hal.h"
 #include "py32f071_ll_i2c.h"
 
-#include "mimic_device.h"
+#include "mimic_registers.h"
 #include "mimic_dsp.h"
 #include "mimic_i2c.h"
+#include "mimic_device.h"
 
 #define VECTOR_TABLE_SIZE 48
 __attribute__((aligned(256))) uint32_t ram_vector_table[VECTOR_TABLE_SIZE];

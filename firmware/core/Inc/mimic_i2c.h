@@ -62,20 +62,6 @@ bool MimicI2c_WriteReg(uint8_t reg, uint8_t val);
  */
 uint8_t MimicI2c_ReadReg(uint8_t reg);
 
-/**
- * @brief Decodes 4 bytes transmitted from the I2C master in Big-Endian (MSB First) format.
- * @param base_addr The starting address in the register array.
- * @return The decoded 32-bit unsigned integer.
- */
-uint32_t MimicI2c_GetParam32(uint8_t base_addr);
-
-/**
- * @brief Decodes 2 bytes transmitted from the I2C master in Big-Endian (MSB First) format.
- * @param base_addr The starting address in the register array.
- * @return The decoded 16-bit unsigned integer.
- */
-uint16_t MimicI2c_GetParam16(uint8_t base_addr);
-
 #ifdef __cplusplus
 }
 #endif

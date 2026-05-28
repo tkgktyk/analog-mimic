@@ -139,7 +139,7 @@ void loop() {
     Serial.println(status, HEX);
 
     // Read status flags from registration mode select
-    uint8_t flags = mimic.getValue(MIMIC_REG_MODE_SELECT); 
+    uint8_t flags = mimic.getValue(MIMIC_REG_MODE_ID); 
     Serial.print("Mimic MODE: 0x");
     Serial.println(flags, HEX);
 
@@ -158,7 +158,7 @@ void loop() {
     Serial.print("  -> Transition/I2C Max Cycles: ");
     Serial.println(transitionCycles);
     Serial.print("  -> Steady State Max Cycles  : ");
-    Serial.print(steadyCycles);
+    Serial.println(steadyCycles);
 
     Serial.println("---------------------------------------");
 

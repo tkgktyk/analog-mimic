@@ -55,16 +55,18 @@ MimicBase::MimicBase(uint16_t vddMv, uint8_t hardwareJumper) :
     _i2c_addr(MIMIC_DEFAULT_I2C_ADDR + (hardwareJumper & 0x0F)),
     _wire(nullptr),
     _vdd_mv(vddMv),
+    _default_fs_hz(MIMIC_ADC_SAMPLING_HZ),
     _fs_hz(MIMIC_ADC_SAMPLING_HZ),
     _global_flags(0),
-    _shift_raw(0) {}
+    _shift_raw(0),
+    _decimation_N(0) {}
 
 bool MimicBase::begin(TwoWire *wire) {
     _wire = wire;
     _global_flags = 0;
     _shift_raw = 0;
-    updateGlobalFlags();
-    updateCommonRegisters();
+    _decimation_N = 0;
+    writeOneByte(MIMIC_REG_GLOBAL_FLAGS, _global_flags);
     return true;
 }
 
@@ -103,39 +105,43 @@ uint16_t MimicBase::readRegister16(uint8_t regAddr) {
 
 // --- Public Register Accessors ---
 
-uint8_t MimicBase::getValue(uint8_t addr) {
+uint8_t MimicBase::getOneByte(uint8_t addr) {
     return readRegister8(addr);
 }
 
+uint16_t MimicBase::getTwoByte2(uint8_t addr) {
+    return readRegister16(addr);
+}
+
 uint8_t MimicBase::getStatus() {
-    return readRegister8(MIMIC_REG_STATUS);
+    return readRegister8(MIMIC_REG_SYSTEM_STATUS);
 }
 
 uint16_t MimicBase::getAdcValue() {
-    return readRegister16(MIMIC_REG_ADC_VAL);
+    return readRegister16(MIMIC_REG_SYSTEM_ADC_VAL);
 }
 
 uint16_t MimicBase::getCpuCycles() {
-    return readRegister16(MIMIC_REG_CPU_CYCLES);
+    return readRegister16(MIMIC_REG_SYSTEM_CPU_CYCLES);
 }
 
 // --- Common Registers & Flags ---
 
-void MimicBase::updateGlobalFlags() {
+void MimicBase::writeOneByte(uint8_t addr, uint8_t value) {
     _wire->beginTransmission(_i2c_addr);
-    _wire->write(MIMIC_REG_GLOBAL_FLAGS);
-    _wire->write(_global_flags);
+    _wire->write(addr);
+    _wire->write(value);
     _wire->endTransmission();
     
     // Wait briefly for PY32 to detect flag differences and stop/open the OPA
     delayMicroseconds(I2C_WRITE_DELAY_US);
 }
 
-void MimicBase::updateCommonRegisters() {
+void MimicBase::writeTwoBytes(uint8_t addr, uint16_t value) {
     _wire->beginTransmission(_i2c_addr);
-    _wire->write(MIMIC_REG_COMMON_START);
-    _wire->write((_shift_raw >> 8) & 0xFF);
-    _wire->write(_shift_raw & 0xFF);
+    _wire->write(addr);
+    _wire->write((value >> 8) & 0xFF);
+    _wire->write(value & 0xFF);
     _wire->endTransmission();
     
     // Added delay for timing safety
@@ -145,23 +151,33 @@ void MimicBase::updateCommonRegisters() {
 void MimicBase::setOutputOpen(bool openEnabled) {
     if (openEnabled) _global_flags |= MIMIC_FLAG_OUT_OPEN;
     else _global_flags &= ~MIMIC_FLAG_OUT_OPEN;
-    updateGlobalFlags();
+
+    writeOneByte(MIMIC_REG_GLOBAL_FLAGS, _global_flags);
 }
 
 void MimicBase::setOutputInverted(bool inverted) {
     if (inverted) _global_flags |= MIMIC_FLAG_INV_OUT;
     else _global_flags &= ~MIMIC_FLAG_INV_OUT;
-    updateGlobalFlags();
+
+    writeOneByte(MIMIC_REG_GLOBAL_FLAGS, _global_flags);
+}
+
+void MimicBase::setDecimation(uint8_t N) {
+    _decimation_N = N;
+    _fs_hz = _default_fs_hz / pow(2, N);
+
+    writeOneByte(MIMIC_REG_GLOBAL_DECIMATION_N, _decimation_N);
 }
 
 void MimicBase::setOutputOffset(int16_t offsetMv) {
     _shift_raw = mvToRawSigned(offsetMv);
-    updateCommonRegisters();
+
+    writeTwoBytes(MIMIC_REG_GLOBAL_OFFSET, _shift_raw);
 }
 
 void MimicBase::writeModeAndPayload(uint8_t mode, const uint8_t *payload, uint8_t length) {
     _wire->beginTransmission(_i2c_addr);
-    _wire->write(MIMIC_REG_MODE_SELECT); // Specify target address 0x10
+    _wire->write(MIMIC_REG_MODE_ID); // Specify target address 0x10
     _wire->write(mode);                  // Write to 0x10. Subsequent bytes auto-increment to 0x11.
     
     // Transmit the payload in a single burst (MCU is idling, so buffer overflow will not occur)
@@ -529,6 +545,29 @@ void MimicBase::setDigitalDelay(uint16_t delaySamples) {
     writeModeAndPayload(MIMIC_MODE_ID_DELAY, payload, 2);
 }
 
+/**
+ * @brief ゲイン校正値(float)をQ15(uint16_t)に変換し、I2C経由でNVMレジスタに書き込む
+ * @param gain ゲイン倍率 (例: 1.0023, 0.994)
+ */
+void MimicBase::setGainCal(float gain) {
+  // 1. float(倍率) を 2バイトの符号なしQ15固定小数点(0〜65535) に変換
+  // 例: 1.0倍 -> 32768, 1.01倍 -> 33096
+  uint16_t gain_q15 = (uint16_t)(gain * 32768.0f);
+
+  writeTwoBytes(MIMIC_REG_NVM_GAIN_Q15, gain_q15);
+}
+
+/**
+ * @brief オフセット校正値(int16_t)を、I2C経由でNVMレジスタに書き込む
+ * @param offset 12bit DAC生コードスケールのオフセット誤差 (例: -3, +5)
+ * @note 引数をuint16_tからint16_tに変更し、負の数を安全に扱えるようにしています。
+ */
+void MimicBase::setOffsetCal(int16_t offset) {
+  // 符号付き int16_t のままビット列としてキャストし、2バイトのデータとして扱う
+  // 例: -1 -> 0xFFFF, +5 -> 0x0005
+  writeTwoBytes(MIMIC_REG_NVM_OFFSET, (uint16_t)offset);
+}
+
 // =========================================================
 // Mimic1x Implementation
 // =========================================================
@@ -536,5 +575,6 @@ void MimicBase::setDigitalDelay(uint16_t delaySamples) {
 void Mimic1x::setHardwareServoEnabled(bool enabled) {
     if (enabled) _global_flags |= MIMIC_FLAG_SERVO_EN;
     else _global_flags &= ~MIMIC_FLAG_SERVO_EN;
-    updateGlobalFlags();
+    
+    writeOneByte(MIMIC_REG_GLOBAL_FLAGS, _global_flags);
 }

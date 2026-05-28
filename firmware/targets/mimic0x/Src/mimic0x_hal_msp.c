@@ -27,7 +27,40 @@
 /* Hardware Revision Pin Definitions (mimic00)                          */
 /* ==================================================================== */
 
-#ifdef HW_REV_MIMIC00
+#if defined(TARGET_MIMIC00)
+  // I2C Peripheral Configuration Pins (PB6 / PB7)
+  #define I2C_SCL_PORT      GPIOB
+  #define I2C_SCL_PIN       GPIO_PIN_6
+  #define I2C_SCL_AF        GPIO_AF1_I2C1 
+
+  #define I2C_SDA_PORT      GPIOB
+  #define I2C_SDA_PIN       GPIO_PIN_7
+  #define I2C_SDA_AF        GPIO_AF1_I2C1
+
+  // OPA1 Pins (Input Buffer)
+  #define OPA1_INP_PIN      GPIO_PIN_9    // PA9
+  #define OPA1_INN_PIN      GPIO_PIN_10   // PA10
+  #define OPA1_OUT_PIN      GPIO_PIN_8    // PA8
+  #define OPA1_PORT         GPIOA
+
+  // OPA2 Pins (Output Driver / DAC2)
+  #define OPA2_INP_PIN      GPIO_PIN_7    // PA7
+  #define OPA2_INN_PIN      GPIO_PIN_6    // PA6
+  #define OPA2_OUT_PIN      GPIO_PIN_5    // PA5
+  #define OPA2_PORT         GPIOA
+
+  // OPA3 Pins (Anti-Aliasing Filter)
+  #define OPA3_INP_PIN      GPIO_PIN_13   // PB13
+  #define OPA3_INN_PIN      GPIO_PIN_12   // PB12
+  #define OPA3_OUT_PIN      GPIO_PIN_14   // PB14
+  #define OPA3_PORT         GPIOB
+
+  // ADC & DAC Pins
+  #define ADC_IN9_PIN       GPIO_PIN_1    // PB1 (Reads AAF Out)
+  #define ADC_IN9_PORT      GPIOB
+  #define DAC1_OUT_PIN      GPIO_PIN_4    // PA4
+  #define DAC_PORT          GPIOA
+#elif defined(TARGET_MIMIC01)
   // I2C Peripheral Configuration Pins (PB6 / PB7)
   #define I2C_SCL_PORT      GPIOB
   #define I2C_SCL_PIN       GPIO_PIN_6

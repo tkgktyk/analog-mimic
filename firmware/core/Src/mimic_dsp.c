@@ -68,7 +68,7 @@ static const int32_t lut_antilog[65] = {
 // Pipeline context structure.
 // Placing 32-bit variables at the top to eliminate alignment padding gaps.
 typedef struct {
-    int32_t  out_mult;          // Inversion multiplier (1 or -1)
+    int32_t  out_mult_q15;          // Signed Q15 multiplier
     int32_t  out_offset_calc;   // Final computed offset including inversion
     uint8_t  current_mode;
     uint8_t  global_flags;
@@ -177,23 +177,27 @@ typedef union {
 // The total footprint is fixed to the size of the largest member (Biquad_t = 28 bytes).
 static DSPContext_u dsp_ctx;
 
+// =========================================================================
+// Static State Variables (すべてネイティブ32bit型に変更して最速化)
+// =========================================================================
+// mask = 2^N-1, shift = N
+// mask = 0, shift = 0 : Native 192kHz mode (Decimation OFF)
+// mask = 1023, shift = 10 : 1024x Decimation (187.5Hz mode)
+static uint32_t decimation_mask = 0;
+static uint32_t decimation_shift = 0;
+static uint32_t adc_accumulator = 0;
+static uint32_t decimation_count = 0;
+
+// DSPの結果を扱う変数も、最初から符号付き32bit (int32_t) にしておく
+// これにより引き算やシフト演算時のキャストが一切不要になる
+static int32_t  y_old = MIMIC_ADC_MID_VALUE;
+static int32_t  y_new = MIMIC_ADC_MID_VALUE;
+static int32_t  delta_step_q16 = 0;
+static int32_t  current_dac_val_q16 = (MIMIC_ADC_MID_VALUE << 16);
+
 // =========================================================
 // Utilities & I2C Parameter Parsers (32-bit Safe)
 // =========================================================
-
-/**
- * @brief Retrieves an unsigned 16-bit parameter from the device registry.
- */
-static inline __attribute__((always_inline)) uint32_t DSP_GetParamU16(uint8_t start_reg) {
-    return (uint32_t)((mimic_device.registers[start_reg] << 8) | mimic_device.registers[start_reg + 1]);
-}
-
-/**
- * @brief Retrieves a signed 16-bit parameter with guaranteed sign extension.
- */
-static inline __attribute__((always_inline)) int32_t DSP_GetParamS16(uint8_t start_reg) {
-    return (int32_t)(int16_t)((mimic_device.registers[start_reg] << 8) | mimic_device.registers[start_reg + 1]);
-}
 
 static inline __attribute__((always_inline)) int32_t RawToQ15(int32_t raw) {
     return (raw - MIMIC_ADC_MID_VALUE) << Q15_SHIFT;
@@ -425,7 +429,7 @@ static inline __attribute__((always_inline)) int32_t ProcessDelay(int32_t adc_va
 void MimicDSP_Init(void) {
     pipeline.current_mode = MIMIC_MODE_ID_BYPASS_DSP;
     pipeline.global_flags = 0;
-    pipeline.out_mult = 1;
+    pipeline.out_mult_q15 = 1 << 15;
     pipeline.out_offset_calc = 0;
 
     memset((void*)&dsp_ctx, 0, sizeof(dsp_ctx));
@@ -436,17 +440,19 @@ void MimicDSP_UpdateParameters(void) {
     uint8_t previous_mode = pipeline.current_mode;
 
     pipeline.global_flags = mimic_device.registers[MIMIC_REG_GLOBAL_FLAGS];
-    pipeline.current_mode = mimic_device.registers[MIMIC_REG_MODE_SELECT];
+    pipeline.current_mode = mimic_device.registers[MIMIC_REG_MODE_ID];
 
     // --- Global Parameters ---
-    int32_t global_output_shift_raw = DSP_GetParamS16(MIMIC_REG_OUTPUT_OFFSET);
+    MimicDSP_SetDecimation(mimic_device.registers[MIMIC_REG_GLOBAL_DECIMATION_N]);
+    int32_t global_gain_q15 = (int32_t)MimicDevice_GetRegU16(MIMIC_REG_NVM_GAIN_Q15);
+    int32_t global_output_shift_raw = MimicDevice_GetRegS16(MIMIC_REG_GLOBAL_OFFSET) + MimicDevice_GetRegS16(MIMIC_REG_NVM_OFFSET);
 
     // Pre-calculate inversion and offsets
     if (pipeline.global_flags & MIMIC_FLAG_INV_OUT) {
-        pipeline.out_mult = -1; 
+        pipeline.out_mult_q15 = -global_gain_q15;
         pipeline.out_offset_calc = MIMIC_ADC_MAX_VALUE - global_output_shift_raw; 
     } else {
-        pipeline.out_mult = 1;  
+        pipeline.out_mult_q15 = global_gain_q15; 
         pipeline.out_offset_calc = global_output_shift_raw;
     }
 
@@ -460,48 +466,48 @@ void MimicDSP_UpdateParameters(void) {
     // --- Mode Specific Parameters (Successfully Unified into dsp_ctx) ---
     switch (pipeline.current_mode) {
         case MIMIC_MODE_ID_FILTER_BIQUAD:
-            dsp_ctx.bq.b0 = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 0);
-            dsp_ctx.bq.b1 = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 2);
-            dsp_ctx.bq.b2 = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 4);
-            dsp_ctx.bq.a1 = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 6);
-            dsp_ctx.bq.a2 = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 8);
+            dsp_ctx.bq.b0 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.bq.b1 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 2);
+            dsp_ctx.bq.b2 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 4);
+            dsp_ctx.bq.a1 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 6);
+            dsp_ctx.bq.a2 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 8);
             break;
 
         case MIMIC_MODE_ID_FILTER_1ST_LPF:
         case MIMIC_MODE_ID_FILTER_1ST_HPF:
-            dsp_ctx.filter1st.alpha_q15 = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 0);
+            dsp_ctx.filter1st.alpha_q15 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
             break;
 
         case MIMIC_MODE_ID_PGA:
-            dsp_ctx.pga.gain_fract_q15 = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 0);
-            dsp_ctx.pga.gain_shift = (int8_t)mimic_device.registers[MIMIC_REG_PAYLOAD_START + 2];
-            dsp_ctx.pga.offset_q15 = RawToQ15(DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 3));
+            dsp_ctx.pga.gain_fract_q15 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.pga.gain_shift = (int8_t)mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START + 2];
+            dsp_ctx.pga.offset_q15 = RawToQ15(MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 3));
             break;
 
         case MIMIC_MODE_ID_COMPARATOR_WIN:
         case MIMIC_MODE_ID_COMPARATOR_SCHMITT:
-            dsp_ctx.comp.upper = DSP_GetParamU16(MIMIC_REG_PAYLOAD_START + 0);
-            dsp_ctx.comp.lower = DSP_GetParamU16(MIMIC_REG_PAYLOAD_START + 2);
+            dsp_ctx.comp.upper = MimicDevice_GetRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.comp.lower = MimicDevice_GetRegU16(MIMIC_REG_MODE_PAYLOAD_START + 2);
             break;
 
         case MIMIC_MODE_ID_MATH_DERIVATIVE:
         case MIMIC_MODE_ID_MATH_INTEGRAL:
-            dsp_ctx.math.scale_fract_q15 = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 0);
-            dsp_ctx.math.scale_shift = (int8_t)mimic_device.registers[MIMIC_REG_PAYLOAD_START + 2];
+            dsp_ctx.math.scale_fract_q15 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.math.scale_shift = (int8_t)mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START + 2];
             break;
 
         case MIMIC_MODE_ID_SLEW_RATE_LIMITER:
             // Slew Rate Limiter smartly reuses the Math structure for its parameter layout
-            dsp_ctx.math.scale_fract_q15 = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 0);
+            dsp_ctx.math.scale_fract_q15 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
             break;
 
         case MIMIC_MODE_ID_CLIPPER:
-            dsp_ctx.clipper.upper = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 0);
-            dsp_ctx.clipper.lower = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 2);
+            dsp_ctx.clipper.upper = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.clipper.lower = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 2);
             break;
 
         case MIMIC_MODE_ID_NONLINEAR_LUT:
-            nonlinear_lut_type = mimic_device.registers[MIMIC_REG_PAYLOAD_START + 0];
+            nonlinear_lut_type = mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START + 0];
             switch (nonlinear_lut_type) {
                 case MIMIC_LUT_LOG: active_lut_ptr = lut_log; break;
                 case MIMIC_LUT_ANTILOG: active_lut_ptr = lut_antilog; break;
@@ -509,21 +515,21 @@ void MimicDSP_UpdateParameters(void) {
             break;
 
         case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:
-            dsp_ctx.envelope.decay_q15 = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 0);
-            dsp_ctx.envelope.polarity = mimic_device.registers[MIMIC_REG_PAYLOAD_START + 2];
+            dsp_ctx.envelope.decay_q15 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.envelope.polarity = mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START + 2];
             break;
 
         case MIMIC_MODE_ID_RECTIFIER_FULL:
-            dsp_ctx.rect.vref_raw = DSP_GetParamS16(MIMIC_REG_PAYLOAD_START + 0);
+            dsp_ctx.rect.vref_raw = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
             break;
 
         case MIMIC_MODE_ID_SAMPLE_AND_HOLD:
-            dsp_ctx.sh.period_samples = DSP_GetParamU16(MIMIC_REG_PAYLOAD_START + 0);
-            dsp_ctx.sh.track_samples = DSP_GetParamU16(MIMIC_REG_PAYLOAD_START + 2);
+            dsp_ctx.sh.period_samples = MimicDevice_GetRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.sh.track_samples = MimicDevice_GetRegU16(MIMIC_REG_MODE_PAYLOAD_START + 2);
             break;
 
         case MIMIC_MODE_ID_DELAY:
-            dsp_ctx.delay.delay_samples = DSP_GetParamU16(MIMIC_REG_PAYLOAD_START + 0);
+            dsp_ctx.delay.delay_samples = MimicDevice_GetRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
             if (dsp_ctx.delay.delay_samples > DELAY_BUFFER_MASK)
                 dsp_ctx.delay.delay_samples = DELAY_BUFFER_MASK;
     }
@@ -563,7 +569,7 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample_RAM
     }
 
     // 3. Post-Processing: Branchless inversion and dynamic DC Offset insertion
-    int32_t final_out = (dsp_out * pipe->out_mult) + pipe->out_offset_calc;
+    int32_t final_out = ((dsp_out * pipe->out_mult_q15) >> 15) + pipe->out_offset_calc;
 
     // 4. Branchless fixed-point saturation logic (Clips dynamically to 0 - 4095)
     if ((uint32_t)final_out > MIMIC_ADC_MAX_VALUE) {
@@ -578,6 +584,20 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample_RAM
  */
 bool MimicDSP_GetOutputOpenStateFromSnapshot(void) {
     return ((pipeline.global_flags & MIMIC_FLAG_OUT_OPEN) != 0);
+}
+
+void MimicDSP_SetDecimation(uint8_t N) {
+    decimation_mask = (1U << N) - 1;
+    decimation_shift = N;
+
+    // 2. DSPの内部状態（バッファとスロープ）を完全に安全にリセット
+    adc_accumulator = 0;
+    decimation_count = 0;
+    
+    y_old = MIMIC_ADC_MID_VALUE;
+    y_new = MIMIC_ADC_MID_VALUE;
+    delta_step_q16 = 0;
+    current_dac_val_q16 = (MIMIC_ADC_MID_VALUE << 16);
 }
 
 // Configuration for Test and Debug Features
@@ -605,8 +625,7 @@ void ADC_COMP_IRQHandler(void) {
     // Reading the DR register automatically clears the EOC flag in hardware.
     // Condition checks on SR are omitted since EOC is the sole active source.
     // =========================================================================
-    uint16_t raw_val = ADC1->DR;
-    MimicDevice_SetAdcVal_Inline(raw_val);
+    uint32_t raw_val = ADC1->DR;
 
     // =========================================================================
     // 3. Signal Saturation Detection
@@ -615,17 +634,48 @@ void ADC_COMP_IRQHandler(void) {
         MimicDevice_SetErrorFlag_Inline(MIMIC_STATUS_SIGNAL_SATURATION);
     }
 
-    // =========================================================================
-    // 4. DSP Processing & Preloading DAC Holding Register for the Next Cycle
-    // =========================================================================
-#ifdef ENABLE_DAC_PULSE
-    static uint16_t dac_pulse = 0;
-    dac_pulse = dac_pulse ? MIMIC_ADC_MIN_VALUE : MIMIC_ADC_MAX_VALUE;
-    MimicDSP_ProcessSample(raw_val);
-    DAC1->DHR12R1 = dac_pulse;
-#else
-    DAC1->DHR12R1 = MimicDSP_ProcessSample_RAM(raw_val);
-#endif
+    if (decimation_mask == 0) {
+        MimicDevice_SetAdcVal_Inline(raw_val);
+
+        // =========================================================================
+        // 4. DSP Processing & Preloading DAC Holding Register for the Next Cycle
+        // =========================================================================
+        DAC1->DHR12R1 = MimicDSP_ProcessSample_RAM(raw_val);
+    } else {
+        // [DECIMATION & INTERPOLATION PATH]
+        uint32_t raw_val = ADC1->DR;
+
+        if (raw_val == MIMIC_ADC_MIN_VALUE || raw_val >= MIMIC_ADC_MAX_VALUE) {
+            MimicDevice_SetErrorFlag_Inline(MIMIC_STATUS_SIGNAL_SATURATION);
+        }
+
+        // 32bitネイティブ演算 (キャスト不要、最速)
+        adc_accumulator += raw_val;
+        decimation_count++;
+
+        current_dac_val_q16 += delta_step_q16;
+        DAC1->DHR12R1 = current_dac_val_q16 >> 16; 
+
+        if ((decimation_count & decimation_mask) == 0) {
+            
+            // シフト結果も32bitで保持
+            uint32_t x_in = adc_accumulator >> decimation_shift;
+            MimicDevice_SetAdcVal_Inline(x_in); 
+
+            y_old = y_new;
+            y_new = MimicDSP_ProcessSample_RAM(x_in);
+
+            // 【超絶最適化ポイント】
+            // 互いにint32_tなのでキャストは一切不要！
+            // C言語のコンパイラは純粋な「SUB」命令と「LSL」命令だけを吐き出す
+            int32_t diff_q16 = (y_new - y_old) << 16;
+            delta_step_q16 = diff_q16 >> decimation_shift;
+
+            current_dac_val_q16 = y_old << 16;
+            
+            adc_accumulator = 0;
+        }
+    }
 
     // =========================================================================
     // 5. Exception (Overrun) Checking 

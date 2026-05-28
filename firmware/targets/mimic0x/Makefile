@@ -1,11 +1,28 @@
 # Analog Mimic - mimic0x Firmware Makefile
 
-TARGET_BASE = analog_mimic
-HW_REV ?= MIMIC00
-# shellコマンド(sed)を使って、HW_REVの「末尾1文字」を「X」に置換し、シリーズ名を自動生成する
-# 例: MIMIC10 -> MIMIC1X, MIMIC01 -> MIMIC0X
-SERIES = $(shell echo $(HW_REV) | sed 's/.$$/X/')
-TARGET = $(TARGET_BASE)_$(HW_REV)
+# ==============================================================================
+# 1. ハードウェアIDの定義 (ここを変更するだけで全てが連動します)
+# ==============================================================================
+# 2桁の16進数文字列 (00, 01, 0A, 10 等)
+HW_ID ?= 01
+
+# ==============================================================================
+# 2. ビルドターゲット（出力ファイル名）の生成
+# ==============================================================================
+# ボード名: "MIMIC" + "01" -> MIMIC01
+BOARD_NAME = MIMIC$(HW_ID)
+
+# 出力ファイル名: analog_mimic_MIMIC01 (.elf, .hex などに使用)
+TARGET = analog_mimic_$(BOARD_NAME)
+
+# ==============================================================================
+# 3. C言語（ファームウェア）へ引き渡すマクロ値の生成
+# ==============================================================================
+# ハードウェアバージョン (16進数): "0x" + "01" -> 0x01
+HW_VERSION_HEX = 0x$(HW_ID)
+
+# ファームウェアバージョン (10進数): Gitのコミット回数を0-255に丸める
+FW_VERSION_DEC = $(shell expr `git rev-list --count HEAD` % 256)
 
 # ========================================================
 # Toolchain Configuration
@@ -44,9 +61,10 @@ C_SOURCES =  \
 ./Src/mimic0x_hal_msp.c \
 ./Src/py32f071_it.c \
 ./Src/system_py32f071.c \
-$(CORE_DIR)/Src/mimic_dsp.c \
-$(CORE_DIR)/Src/mimic_i2c.c \
 $(CORE_DIR)/Src/mimic_device.c \
+$(CORE_DIR)/Src/mimic_dsp.c \
+$(CORE_DIR)/Src/mimic_flash.c \
+$(CORE_DIR)/Src/mimic_i2c.c \
 $(HAL_DRIVER_DIR)/Src/py32f071_hal.c \
 $(HAL_DRIVER_DIR)/Src/py32f071_hal_rcc.c \
 $(HAL_DRIVER_DIR)/Src/py32f071_hal_rcc_ex.c \
@@ -59,7 +77,8 @@ $(HAL_DRIVER_DIR)/Src/py32f071_ll_i2c.c \
 $(HAL_DRIVER_DIR)/Src/py32f071_ll_rcc.c \
 $(HAL_DRIVER_DIR)/Src/py32f071_hal_tim.c \
 $(HAL_DRIVER_DIR)/Src/py32f071_hal_opa.c \
-$(HAL_DRIVER_DIR)/Src/py32f071_hal_tim_ex.c
+$(HAL_DRIVER_DIR)/Src/py32f071_hal_tim_ex.c \
+$(HAL_DRIVER_DIR)/Src/py32f071_hal_flash.c
 
 # Startup routine
 ASM_SOURCES =  \
@@ -83,8 +102,9 @@ C_DEFS =  \
 -DUSE_HAL_DRIVER \
 -DUSE_FULL_LL_DRIVER \
 -DPY32F071xB \
--DHW_REV_$(HW_REV) \
--DSERIES_$(SERIES) \
+-DTARGET_$(BOARD_NAME) \
+-DMIMIC_HW_VERSION_VALUE=$(HW_VERSION_HEX) \
+-DMIMIC_FW_VERSION_VALUE=$(FW_VERSION_DEC) \
 -DARM_MATH_CM0PLUS
 
 MCU = -mcpu=cortex-m0plus -mthumb

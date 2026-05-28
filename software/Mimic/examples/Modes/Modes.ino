@@ -7,7 +7,7 @@ Mimic0x mimic(MIMIC_VDD_5V);
 volatile uint16_t *const DAC_REG = (uint16_t *)0x4005E000;
 
 // --- Waveform Configuration Parameters ---
-volatile float waveFreq = 100.0; // Base waveform frequency (100Hz scale)
+volatile float waveFreq = 1000.0; // Base waveform frequency (100Hz scale)
 #define SINE_TABLE_SIZE 256
 
 // Waveform amplitude constants (12-bit DAC: 0 - 4095)
@@ -27,8 +27,8 @@ const float BPF_Q        = 5.0;           // Sharpness of band-pass extraction
 const float SH_FREQ_HZ = waveFreq * 10;   // S&H sampling frequency (10x coarser than waveform)
 const float TH_DUTY_CYCLE = 0.5;          // Track time ratio (0.0 to 1.0)
 const float VREF_MV = MIMIC_VDD_5V / 2;   // Center voltage reference for rectification
-const float SLEW_LIMIT_VAL = 0.001f;      // Maximum rate of change per sample
-const float ENVELOPE_TIME_US = 10000.0f;  // Decay time constant for envelope follower
+const float SLEW_LIMIT_VAL = waveFreq/100000.0f;      // Maximum rate of change per sample
+const float ENVELOPE_TIME_US = waveFreq*10.0f;  // Decay time constant for envelope follower
 const uint16_t SCHMITT_HIGH_MV = 3000;    // Upper threshold for Schmitt trigger
 const uint16_t SCHMITT_LOW_MV = 2000;     // Lower threshold for Schmitt trigger
 
@@ -58,32 +58,30 @@ enum DemoMode {
 };
 
 volatile DemoMode currentMode = MODE_PULSE_BYPASS;
-volatile unsigned long sample_count = 0;
-unsigned long samples_per_period;
+// 変更後（DDS方式用の変数）
+volatile uint32_t phase_accumulator = 0;
+uint32_t phase_increment = 0;
 FspTimer timer;
 uint16_t sine_table[SINE_TABLE_SIZE];
 
 // --- Timer Interrupt Service Routine ---
 void timer_callback(timer_callback_args_t *args) {
-  uint16_t out_val = 0;
-  bool isSine = (currentMode >= MODE_SINE_BYPASS);
-  float phase = (float)sample_count / samples_per_period;
+// 1. 位相を進める (加算のみ、オーバーフローは自動で0に戻るので処理不要)
+  phase_accumulator += phase_increment;
 
-  if (!isSine) {
-    // Generate Square/Pulse Wave
-    out_val = (phase < 0.5) ? WAVE_AMP_HIGH : WAVE_AMP_LOW;
-  } else {
-    // Generate Sine Wave
-    int index = (int)(phase * SINE_TABLE_SIZE);
+  uint16_t out_val;
+  if (currentMode >= MODE_SINE_BYPASS) {
+    // 2. 正弦波：上位ビットを取り出して配列のインデックスにする (SINE_TABLE_SIZEが256の場合、上位8ビット)
+    // SINE_TABLE_SIZE が 1024 なら 22、512 なら 23 に変更してください
+    uint32_t index = phase_accumulator >> 24; 
     out_val = sine_table[index];
+  } else {
+    // 3. 矩形波：最上位ビット (MSB) が 1 (後半) か 0 (前半) かだけで判定
+    out_val = (phase_accumulator & 0x80000000) ? WAVE_AMP_LOW : WAVE_AMP_HIGH;
   }
 
+  // 4. DAC出力
   *DAC_REG = out_val;
-
-  sample_count++;
-  if (sample_count >= samples_per_period) {
-    sample_count = 0;
-  }
 }
 
 void setup() {
@@ -107,7 +105,9 @@ void setup() {
     sine_table[i] = SINE_CENTER + (int)(SINE_VAL_AMP * sin(angle));
   }
 
-  samples_per_period = (unsigned long)(MIMIC_ADC_SAMPLING_HZ / waveFreq);
+  double targetFreq = waveFreq; // 例: 100Hz
+  double timerFreq = MIMIC_ADC_SAMPLING_HZ;
+  phase_increment = (uint32_t)((targetFreq * 4294967296.0) / timerFreq);
 
   uint8_t timer_type = 0;
   int8_t timer_ch = FspTimer::get_available_timer(timer_type);

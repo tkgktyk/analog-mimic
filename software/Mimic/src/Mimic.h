@@ -58,7 +58,14 @@ public:
    * @param addr Register address.
    * @return The 8-bit register value.
    */
-  uint8_t getValue(uint8_t addr);
+  uint8_t getOneByte(uint8_t addr);
+
+  /**
+   * @brief Reads a raw 16-bit value from a specific I2C register.
+   * @param addr Register address.
+   * @return The 16-bit register value.
+   */
+  uint16_t getTwoBytes(uint8_t addr);
 
   /**
    * @brief Retrieves the current status flag of the module.
@@ -91,6 +98,8 @@ public:
    * @param inverted True to invert the DAC output (4095 - val), False for normal.
    */
   void setOutputInverted(bool inverted);
+
+  void setDecimation(uint8_t N);
 
   /**
    * @brief Applies a manual DC offset to the output signal.
@@ -268,25 +277,31 @@ public:
    */
   void setDigitalDelay(uint16_t delaySamples);
 
+  void setGainCal(float gain);
+
+  void setOffsetCal(int16_t offset);
+
 protected:
   MimicBase(uint16_t vddMv, uint8_t hardwareJumper = 0);
 
   uint8_t _i2c_addr;
   TwoWire *_wire;
   uint16_t _vdd_mv;
+  float _default_fs_hz;
   float _fs_hz;
 
   // State retention variables
   uint8_t _global_flags;
   uint16_t _delay_samples;
   int16_t _shift_raw;
+  uint8_t _decimation_N;
 
   uint8_t readRegister8(uint8_t regAddr);
   uint16_t readRegister16(uint8_t regAddr);
 
   void writeModeAndPayload(uint8_t mode, const uint8_t *payload, uint8_t length);
-  void updateGlobalFlags();
-  void updateCommonRegisters();
+  void writeOneByte(uint8_t addr, uint8_t value);
+  void writeTwoBytes(uint8_t addr, uint16_t value);
 
   uint16_t mvToRaw(uint16_t mv);
   int16_t mvToRawSigned(int16_t mv);
