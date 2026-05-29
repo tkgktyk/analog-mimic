@@ -25,7 +25,6 @@
 #include "py32f0xx_hal.h"
 #include "py32f071_ll_i2c.h"
 #include "mimic_device.h"
-#include "mimic_flash.h"
 
 // =========================================================
 // Constants & Macros
@@ -46,7 +45,7 @@ static volatile uint8_t latched_system_command = 0;
  * @brief Initializes the I2C request handler variables.
  * @note  Default state defaults to 0 (unity gain / through mode) via system reset.
  */
-void MimicI2c_Init(void) {
+void MimicI2C_Init(void) {
   current_reg_addr = 0;
   is_reg_addr_received = false;
 }
@@ -95,7 +94,7 @@ void I2C1_IRQHandler(void) {
     } else {
       // Byte 2 and subsequent bytes contain payload data; push to shadow register
       if (current_reg_addr < MIMIC_REG_SHADOW_SIZE) {
-        if (MimicI2c_WriteReg(current_reg_addr, rx_data)) {
+        if (MimicI2C_WriteReg(current_reg_addr, rx_data)) {
           // Raise update trigger indicating a DSP parameter reconfiguration
           is_dsp_update_required = true; 
         }
@@ -113,7 +112,7 @@ void I2C1_IRQHandler(void) {
   // 3. TXE: Transmit buffer empty (Master requests data read out)
   // Process transmission setup only if the BTF (Byte Transfer Finished) flag is clear
   if (LL_I2C_IsActiveFlag_TXE(I2C1) && (LL_I2C_IsActiveFlag_BTF(I2C1) == 0)) {
-    uint8_t tx_data = MimicI2c_ReadReg(current_reg_addr);
+    uint8_t tx_data = MimicI2C_ReadReg(current_reg_addr);
     LL_I2C_TransmitData8(I2C1, tx_data);
     
     // Automatic address pointer auto-increment
@@ -167,7 +166,7 @@ void I2C1_IRQHandler(void) {
  * @param addr The register address to write to.
  * @param val The value to write.
  */
-bool MimicI2c_WriteReg(uint8_t addr, uint8_t val) {
+bool MimicI2C_WriteReg(uint8_t addr, uint8_t val) {
   // 正常な書き込みはそのままRAMに反映
   if (addr >= MIMIC_REG_GLOBAL_START && addr < MIMIC_REG_SHADOW_SIZE) {
     MimicDevice_WriteReg(addr, val);
@@ -184,7 +183,7 @@ bool MimicI2c_WriteReg(uint8_t addr, uint8_t val) {
  * @param addr The register address to read from.
  * @return The value of the requested register, or I2C_READ_ERROR_VALUE on error.
  */
-uint8_t MimicI2c_ReadReg(uint8_t addr) {
+uint8_t MimicI2C_ReadReg(uint8_t addr) {
   static uint16_t latched_adc_val = 0;
   static uint16_t latched_cpu_cycles = 0;
 
@@ -223,7 +222,7 @@ uint8_t MimicI2c_ReadReg(uint8_t addr) {
   // 2. Handle all remaining spaces (Global, Mode, Payload, NVM) via standard memory map
   if (addr < MIMIC_REG_SHADOW_SIZE) {
     // 0x10〜0x3F までのアクセスは、ここで自動的にRAMの値を返す（NVMの校正値も含む！）
-    return MimicDevice_ReadRegU8(addr);
+    return MimicDevice_ReadReg(addr);
   }
 
   // 3. Out of bounds access (0x40以上)

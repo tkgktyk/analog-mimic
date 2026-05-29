@@ -80,6 +80,7 @@
 #define MIMIC_REG_MODE_START       0x20
 #define MIMIC_REG_MODE_ID       0x20
 #define MIMIC_REG_MODE_PAYLOAD_START     0x21 
+#define MIMIC_REG_MODE_PAYLOAD_END     0x2F 
 #define MIMIC_REG_MODE_END       0x2F
 
 // =========================================================

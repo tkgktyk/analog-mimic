@@ -24,8 +24,6 @@
 #include "mimic_dsp.h"
 #include "py32f0xx_hal.h"
 #include "mimic_device.h"
-#include "mimic_registers.h"
-#include "mimic_flash.h"
 #include <string.h>
 
 // =========================================================
@@ -41,9 +39,6 @@
 #define LUT_FRAC_MASK     0x3F
 #define BIQUAD_ROUND_VAL  8192
 #define BIQUAD_SHIFT      14
-
-MimicCallback_t cb_enable_output = NULL;
-MimicCallback_t cb_disable_output = NULL;
 
 // =========================================================
 // Look-Up Tables (LUT)
@@ -431,10 +426,7 @@ static inline __attribute__((always_inline)) int32_t ProcessDelay(int32_t adc_va
 // =========================================================
 // Initialization and Parameter Updates
 // =========================================================
-void MimicDSP_Init(MimicCallback_t enable_output, MimicCallback_t disable_output) {
-    cb_enable_output = enable_output;
-    cb_disable_output = disable_output;
-
+void MimicDSP_Init(void) {
     pipeline.current_mode = MIMIC_MODE_ID_BYPASS_DSP;
     pipeline.global_flags = 0;
     pipeline.out_mult_q15 = 1 << 15;
@@ -444,24 +436,30 @@ void MimicDSP_Init(MimicCallback_t enable_output, MimicCallback_t disable_output
     dsp_ctx.comp.wave_last_raw = MIMIC_ADC_MID_VALUE;
 }
 
-void MimicDSP_UpdateParameters(void) {
+static inline __attribute__((always_inline)) uint16_t ParseU16(const uint8_t *p) {
+    return _MimicDevice_ReadU16_BE(p);
+}
+
+static inline __attribute__((always_inline)) int16_t ParseS16(const uint8_t *p) {
+    return _MimicDevice_ReadS16_BE(p);
+}
+
+void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
     uint8_t previous_mode = pipeline.current_mode;
 
-    pipeline.global_flags = MimicDevice_ReadRegU8(MIMIC_REG_GLOBAL_FLAGS);
-    pipeline.current_mode = MimicDevice_ReadRegU8(MIMIC_REG_MODE_ID);
+    pipeline.global_flags = config->global_flags;
+    pipeline.current_mode = config->mode_id;
 
     // --- Global Parameters ---
-    MimicDSP_SetDecimation(MimicDevice_ReadRegU8(MIMIC_REG_GLOBAL_DECIMATION_N));
-    int32_t global_gain_q15 = (int32_t)MimicDevice_ReadRegU16(MIMIC_REG_NVM_GAIN_Q15);
-    int32_t global_output_shift_raw = MimicDevice_ReadRegS16(MIMIC_REG_GLOBAL_OFFSET) + MimicDevice_ReadRegS16(MIMIC_REG_NVM_OFFSET);
+    MimicDSP_SetDecimation(config->decimation_n);
 
     // Pre-calculate inversion and offsets
     if (pipeline.global_flags & MIMIC_FLAG_INV_OUT) {
-        pipeline.out_mult_q15 = -global_gain_q15;
-        pipeline.out_offset_calc = MIMIC_ADC_MAX_VALUE - global_output_shift_raw; 
+        pipeline.out_mult_q15 = -config->gain_q15;
+        pipeline.out_offset_calc = MIMIC_ADC_MAX_VALUE - config->offset_raw; 
     } else {
-        pipeline.out_mult_q15 = global_gain_q15; 
-        pipeline.out_offset_calc = global_output_shift_raw;
+        pipeline.out_mult_q15 = config->gain_q15; 
+        pipeline.out_offset_calc = config->offset_raw;
     }
 
     // Completely reset the memory region (parameters + states) at once when the mode is switched.
@@ -472,50 +470,51 @@ void MimicDSP_UpdateParameters(void) {
     }
 
     // --- Mode Specific Parameters (Successfully Unified into dsp_ctx) ---
+    const uint8_t *p = config->payload;
     switch (pipeline.current_mode) {
         case MIMIC_MODE_ID_FILTER_BIQUAD:
-            dsp_ctx.bq.b0 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.bq.b1 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 2);
-            dsp_ctx.bq.b2 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 4);
-            dsp_ctx.bq.a1 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 6);
-            dsp_ctx.bq.a2 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 8);
+            dsp_ctx.bq.b0 = ParseS16(p + 0);
+            dsp_ctx.bq.b1 = ParseS16(p + 2);
+            dsp_ctx.bq.b2 = ParseS16(p + 4);
+            dsp_ctx.bq.a1 = ParseS16(p + 6);
+            dsp_ctx.bq.a2 = ParseS16(p + 8);
             break;
 
         case MIMIC_MODE_ID_FILTER_1ST_LPF:
         case MIMIC_MODE_ID_FILTER_1ST_HPF:
-            dsp_ctx.filter1st.alpha_q15 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.filter1st.alpha_q15 = ParseS16(p + 0);
             break;
 
         case MIMIC_MODE_ID_PGA:
-            dsp_ctx.pga.gain_fract_q15 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.pga.gain_shift = MimicDevice_ReadRegS8(MIMIC_REG_MODE_PAYLOAD_START + 2);
-            dsp_ctx.pga.offset_q15 = RawToQ15(MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 3));
+            dsp_ctx.pga.gain_fract_q15 = ParseS16(p + 0);
+            dsp_ctx.pga.gain_shift = (int8_t)*(p + 2);
+            dsp_ctx.pga.offset_q15 = RawToQ15(ParseS16(p + 3));
             break;
 
         case MIMIC_MODE_ID_COMPARATOR_WIN:
         case MIMIC_MODE_ID_COMPARATOR_SCHMITT:
-            dsp_ctx.comp.upper = MimicDevice_ReadRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.comp.lower = MimicDevice_ReadRegU16(MIMIC_REG_MODE_PAYLOAD_START + 2);
+            dsp_ctx.comp.upper = ParseU16(p + 0);
+            dsp_ctx.comp.lower = ParseU16(p + 2);
             break;
 
         case MIMIC_MODE_ID_MATH_DERIVATIVE:
         case MIMIC_MODE_ID_MATH_INTEGRAL:
-            dsp_ctx.math.scale_fract_q15 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.math.scale_shift = MimicDevice_ReadRegS8(MIMIC_REG_MODE_PAYLOAD_START + 2);
+            dsp_ctx.math.scale_fract_q15 = ParseS16(p + 0);
+            dsp_ctx.math.scale_shift = (int8_t)*(p + 2);
             break;
 
         case MIMIC_MODE_ID_SLEW_RATE_LIMITER:
             // Slew Rate Limiter smartly reuses the Math structure for its parameter layout
-            dsp_ctx.math.scale_fract_q15 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.math.scale_fract_q15 = ParseS16(p + 0);
             break;
 
         case MIMIC_MODE_ID_CLIPPER:
-            dsp_ctx.clipper.upper = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.clipper.lower = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 2);
+            dsp_ctx.clipper.upper = ParseS16(p + 0);
+            dsp_ctx.clipper.lower = ParseS16(p + 2);
             break;
 
         case MIMIC_MODE_ID_NONLINEAR_LUT:
-            nonlinear_lut_type = MimicDevice_ReadRegS8(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            nonlinear_lut_type = (int8_t)*(p + 0);
             switch (nonlinear_lut_type) {
                 case MIMIC_LUT_LOG: active_lut_ptr = lut_log; break;
                 case MIMIC_LUT_ANTILOG: active_lut_ptr = lut_antilog; break;
@@ -523,21 +522,21 @@ void MimicDSP_UpdateParameters(void) {
             break;
 
         case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:
-            dsp_ctx.envelope.decay_q15 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.envelope.polarity = MimicDevice_ReadRegU8(MIMIC_REG_MODE_PAYLOAD_START + 2);
+            dsp_ctx.envelope.decay_q15 = ParseS16(p + 0);
+            dsp_ctx.envelope.polarity = (int8_t)*(p + 2);
             break;
 
         case MIMIC_MODE_ID_RECTIFIER_FULL:
-            dsp_ctx.rect.vref_raw = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.rect.vref_raw = ParseS16(p + 0);
             break;
 
         case MIMIC_MODE_ID_SAMPLE_AND_HOLD:
-            dsp_ctx.sh.period_samples = MimicDevice_ReadRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.sh.track_samples = MimicDevice_ReadRegU16(MIMIC_REG_MODE_PAYLOAD_START + 2);
+            dsp_ctx.sh.period_samples = ParseU16(p + 0);
+            dsp_ctx.sh.track_samples = ParseU16(p + 2);
             break;
 
         case MIMIC_MODE_ID_DELAY:
-            dsp_ctx.delay.delay_samples = MimicDevice_ReadRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.delay.delay_samples = ParseU16(p + 0);
             if (dsp_ctx.delay.delay_samples > DELAY_BUFFER_MASK)
                 dsp_ctx.delay.delay_samples = DELAY_BUFFER_MASK;
     }
@@ -692,33 +691,4 @@ void ADC_COMP_IRQHandler(void) {
     }
     MimicDevice_UpdateCpuCyclesMax_ISR(cycles);
 #endif
-}
-
-void MimicDSP_ProcessPendingTasks(void) {
-    uint8_t cmd = MimicDevice_PopSystemCommand();
-    if (cmd != MIMIC_CMD_NOP) {
-        switch (cmd) {
-            case MIMIC_CMD_NVM_COMMIT:
-                MimicFlash_WriteGainQ15Data(MimicDevice_ReadRegU16(MIMIC_REG_NVM_GAIN_Q15));
-                MimicFlash_WriteOffsetData(MimicDevice_ReadRegS16(MIMIC_REG_NVM_OFFSET));
-                break;
-            case MIMIC_CMD_NVM_RELOAD:
-                MimicDevice_LoadCalibration();
-                break;
-        }
-    }
-
-    // 1. Minimum necessary background processing
-    if (MimicDevice_PopUpdateFlag()) {
-        HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
-        cb_disable_output();
-
-        MimicDSP_UpdateParameters();
-        // Reset cpu cycles count
-        MimicDevice_PopCpuCyclesMax();
-        if ((pipeline.global_flags & MIMIC_FLAG_OUT_OPEN) == 0) {
-            cb_enable_output();
-        }
-        HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
-    }
 }

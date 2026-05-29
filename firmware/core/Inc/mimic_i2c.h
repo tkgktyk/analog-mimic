@@ -38,14 +38,14 @@ extern "C" {
 /**
  * @brief Initializes the I2C request handler and registry system states.
  */
-void MimicI2c_Init(void);
+void MimicI2C_Init(void);
 
 /**
  * @brief  Fast Low-Layer I2C1 Interrupt Service Routine block.
  * @note   Bypasses standard HAL callback overhead to process I2C events 
  * and errors deterministically.
  */
-void MimicI2c_IRQHandler_LL(void);
+void MimicI2C_IRQHandler_LL(void);
 
 /**
  * @brief Writes a value to a specified I2C shadow register.
@@ -53,14 +53,14 @@ void MimicI2c_IRQHandler_LL(void);
  * @param val The value to write.
  * @return true if the write was successful, false if out of bounds.
  */
-bool MimicI2c_WriteReg(uint8_t reg, uint8_t val);
+bool MimicI2C_WriteReg(uint8_t reg, uint8_t val);
 
 /**
  * @brief Reads a value from a specified I2C register or internal virtual register.
  * @param reg The register address to read from.
  * @return The value of the requested register, or 0xFF on error.
  */
-uint8_t MimicI2c_ReadReg(uint8_t reg);
+uint8_t MimicI2C_ReadReg(uint8_t reg);
 
 #ifdef __cplusplus
 }

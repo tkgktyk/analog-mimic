@@ -25,8 +25,6 @@
 #include "py32f071_ll_i2c.h"
 
 #include "mimic_registers.h"
-#include "mimic_dsp.h"
-#include "mimic_i2c.h"
 #include "mimic_device.h"
 
 #define VECTOR_TABLE_SIZE 48
@@ -99,9 +97,7 @@ int main(void) {
   MX_TIM3_Init();
 
   // Initialize Analog Mimic Core Logic
-  MimicI2c_Init();
-  MimicDSP_Init(&MimicCallback_EnableOutput, &MimicCallback_DisableOutput);
-  MimicDevice_LoadCalibration();
+  MimicDevice_Init(&MimicCallback_EnableOutput, &MimicCallback_DisableOutput);
 
   // Relocate vector table to RAM
   RelocateVectorTableToRAM();
@@ -119,7 +115,7 @@ int main(void) {
 
   // Main background loop
   while (1) {
-    MimicDSP_ProcessPendingTasks();
+    MimicDevice_ProcessPendingTasks();
 
     // 2. Execute WFI (Wait For Interrupt).
     // When a sampling interrupt (TIM3) occurs here, it will jump to the ISR 

@@ -25,31 +25,33 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "mimic_registers.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef void (*MimicCallback_t)(void);
+#define MIMIC_DSP_PAYLOAD_SIZE (MIMIC_REG_MODE_PAYLOAD_END - MIMIC_REG_MODE_PAYLOAD_START)
 
-// =========================================================
-// Initialization and Main Loop
-// =========================================================
+typedef struct {
+    uint8_t mode_id;
+    uint8_t global_flags;
+    uint8_t decimation_n;
+    int32_t gain_q15;
+    int32_t offset_raw;
+    uint8_t payload[MIMIC_DSP_PAYLOAD_SIZE];
+} MimicDSP_Config_t;
+
 
 /**
  * @brief Initializes the DSP core memory space and internal state variables.
  * @note  Clears biquad delay lines and resets tracking waveform latches to default.
  */
-void MimicDSP_Init(MimicCallback_t enable_output, MimicCallback_t disable_output);
-
-/**
- * @brief Applies parameters acquired via I2C to the internal DSP mathematical models.
- * @note  Typically called from within MimicDSP_ProcessLoop() while hardware
- * analog outputs are safely isolated.
- */
-void MimicDSP_ProcessPendingTasks(void);
+void MimicDSP_Init(void);
 
 void MimicDSP_SetDecimation(uint8_t N);
+
+void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config);
 
 #ifdef __cplusplus
 }

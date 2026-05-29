@@ -50,42 +50,39 @@ typedef struct {
   volatile uint8_t pending_system_command;
 } MimicDevice_t;
 
+typedef void (*MimicCallback_t)(void);
+
+void MimicDevice_Init(MimicCallback_t enable_output, MimicCallback_t disable_output);
+
+
 // =========================================================
 // Parameter Decoding Utilities (Big-Endian)
 // =========================================================
+/**
+ * @brief Big-Endianのバイト配列から16bit整数を復元する（型安全な関数版）
+ * @note  マクロの代わりとして、常にインライン展開されるように定義
+ */
+static inline __attribute__((always_inline)) uint16_t _MimicDevice_ReadU16_BE(const volatile uint8_t *p) {
+    return (uint16_t)((p[0] << 8) | p[1]);
+}
+
+static inline __attribute__((always_inline)) int16_t _MimicDevice_ReadS16_BE(const volatile uint8_t *p) {
+    return (int16_t)((p[0] << 8) | p[1]);
+}
 
 // C言語の static inline は、コンパイル時に「関数呼び出し」ではなく
 // 「直接のメモリアクセス」に展開されるため、オーバーヘッドは完全にゼロ（0クロック）です。
-static inline __attribute__((always_inline)) uint8_t MimicDevice_ReadRegU8(uint8_t reg) {
+static inline __attribute__((always_inline)) uint8_t MimicDevice_ReadReg(uint8_t reg) {
     extern MimicDevice_t mimic_device; // 実体への参照
     return mimic_device.registers[reg];
-}
-
-static inline __attribute__((always_inline)) int8_t MimicDevice_ReadRegS8(uint8_t reg) {
-    extern MimicDevice_t mimic_device; // 実体への参照
-    return (int8_t)mimic_device.registers[reg];
-}
-
-/**
- * @brief Retrieves an unsigned 16-bit parameter from the device registry.
- */
-static inline __attribute__((always_inline)) uint16_t MimicDevice_ReadRegU16(uint8_t start_reg) {
-    extern MimicDevice_t mimic_device; // 実体への参照
-    return (uint16_t)((mimic_device.registers[start_reg] << 8) | mimic_device.registers[start_reg + 1]);
-}
-
-/**
- * @brief Retrieves a signed 16-bit parameter with guaranteed sign extension.
- */
-static inline __attribute__((always_inline)) int32_t MimicDevice_ReadRegS16(uint8_t start_reg) {
-    extern MimicDevice_t mimic_device; // 実体への参照
-    return (int32_t)(int16_t)((mimic_device.registers[start_reg] << 8) | mimic_device.registers[start_reg + 1]);
 }
 
 static inline __attribute__((always_inline)) void MimicDevice_WriteReg(uint8_t addr, uint8_t val) {
     extern MimicDevice_t mimic_device;
     mimic_device.registers[addr] = val;
 }
+
+
 
 // =========================================================
 // Thread-Safe Accessor APIs
@@ -128,37 +125,23 @@ static inline __attribute__((always_inline)) uint16_t MimicDevice_PopCpuCyclesMa
   return max_cycles;
 }
 
-void MimicDevice_LoadCalibration(void);
-
-/**
- * @brief 保留中のシステムコマンドを取得し、キュー（フラグ）をクリアする
- */
-static inline __attribute__((always_inline)) uint8_t MimicDevice_PopSystemCommand(void) {
-    extern MimicDevice_t mimic_device;
-    uint8_t cmd = mimic_device.pending_system_command;
-    mimic_device.pending_system_command = 0; // 0 = MIMIC_CMD_NOP
-    return cmd;
-}
-
 static inline __attribute__((always_inline)) void MimicDevice_RequestSystemCommand(uint8_t cmd) {
     extern MimicDevice_t mimic_device;
     mimic_device.pending_system_command = cmd;
-}
-
-/**
- * @brief DSPパラメータ更新要求があるか確認し、フラグをクリアする
- */
-static inline __attribute__((always_inline)) bool MimicDevice_PopUpdateFlag(void) {
-    extern MimicDevice_t mimic_device;
-    bool flag = mimic_device.i2c_dirty_flag;
-    mimic_device.i2c_dirty_flag = false;
-    return flag;
 }
 
 static inline __attribute__((always_inline)) void MimicDevice_RequestUpdate(void) {
     extern MimicDevice_t mimic_device;
     mimic_device.i2c_dirty_flag = true;
 }
+
+
+/**
+ * @brief Applies parameters acquired via I2C to the internal DSP mathematical models.
+ * @note  Typically called from within MimicDSP_ProcessLoop() while hardware
+ * analog outputs are safely isolated.
+ */
+void MimicDevice_ProcessPendingTasks(void);
 
 // =========================================================
 // Fast Inline Accessors for High-Frequency ISRs
