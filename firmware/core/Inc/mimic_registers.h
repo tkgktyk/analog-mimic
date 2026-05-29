@@ -94,8 +94,11 @@
 #define MIMIC_REG_NVM_OFFSET      MIMIC_REG_NVM_OFFSET_H
 #define MIMIC_REG_NVM_END         0x33
 #define MIMIC_REG_NVM_RAM_SIZE    (MIMIC_REG_NVM_END - MIMIC_REG_NVM_START + 1)
-// --- NVM (Flash) Control Register ---
-#define MIMIC_REG_NVM_CTRL          0x3F // Write command here to trigger Flash operations
+
+// =========================================================
+// System Commands (Action Triggers, outside Shadow RAM)
+// =========================================================
+#define MIMIC_REG_CMD_PORT          0x40 // Command Interface (Write-Only)
 
 
 // --- 2. Global Control Flags ---
@@ -141,9 +144,9 @@
 
 #define MIMIC_MODE_MAX_ID                 MIMIC_MODE_ID_DELAY
 
-// NVM Control Commands
-#define MIMIC_NVM_CMD_SAVE          0xA5 // Save current NVM values to FLASH
-#define MIMIC_NVM_CMD_RELOAD        0x5A // Discard NVM values and reload from FLASH
-
+// Commands for MIMIC_REG_CMD_PORT
+#define MIMIC_CMD_NOP               0x00
+#define MIMIC_CMD_NVM_COMMIT          0xA5 // Save current NVM values to FLASH
+#define MIMIC_CMD_NVM_RELOAD        0x5A // Discard NVM values and reload from FLASH
 
 #endif // MIMIC_REGISTERS_H

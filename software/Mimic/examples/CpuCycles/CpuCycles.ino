@@ -125,7 +125,7 @@ void setup() {
   mimic.setOutputOpen(false);
 }
 
-void loop() {
+void profile() {
   for (size_t i = 0; i < NUM_MODES; i++) {
     Serial.print("Testing Mode: ");
     Serial.println(testModes[i].modeName);
@@ -139,7 +139,7 @@ void loop() {
     Serial.println(status, HEX);
 
     // Read status flags from registration mode select
-    uint8_t flags = mimic.getValue(MIMIC_REG_MODE_ID); 
+    uint8_t flags = mimic.getOneByte(MIMIC_REG_MODE_ID); 
     Serial.print("Mimic MODE: 0x");
     Serial.println(flags, HEX);
 
@@ -169,5 +169,12 @@ void loop() {
 
   // Complete profiling loop execution
   Serial.println("\n=== Profiling Complete ===");
+}
+
+void loop() {
+  profile();
+  mimic.setDecimation(1);
+  Serial.println("\n=== Second Profiling (Decimation=1) ===");
+  profile();
   while (1); 
 }

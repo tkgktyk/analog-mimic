@@ -25,6 +25,7 @@
 #include "py32f0xx_hal.h"
 #include "mimic_device.h"
 #include "mimic_registers.h"
+#include "mimic_flash.h"
 #include <string.h>
 
 // =========================================================
@@ -40,6 +41,9 @@
 #define LUT_FRAC_MASK     0x3F
 #define BIQUAD_ROUND_VAL  8192
 #define BIQUAD_SHIFT      14
+
+MimicCallback_t cb_enable_output = NULL;
+MimicCallback_t cb_disable_output = NULL;
 
 // =========================================================
 // Look-Up Tables (LUT)
@@ -341,34 +345,35 @@ static inline __attribute__((always_inline)) int32_t ProcessMathDerivative(int32
     Math_t *p = (Math_t *)&dsp_ctx.math;
 
     int32_t in_q15 = RawToQ15(adc_val);
-    int32_t diff_mult = (in_q15 - p->last_q15) * p->scale_fract_q15;
-    int32_t out_q15 = diff_mult >> FRACTIONAL_BITS_Q15;
-    if (p->scale_shift > 0) out_q15 <<= p->scale_shift;
+    int32_t diff = in_q15 - p->last_q15;
     p->last_q15 = in_q15;
+
+    // 1. 差分に対するスケール適用 (仮数部の乗算)
+    int32_t diff_mult = (diff * p->scale_fract_q15) >> FRACTIONAL_BITS_Q15;
+    
+    // 2. 最終ゲインの適用 (指数部のシフト)
+    int32_t s = p->scale_shift;
+    int32_t out_q15 = (s >= 0) ? (diff_mult << s) : (diff_mult >> -s);
+    
     return Q15ToRaw(out_q15);
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessMathIntegral(int32_t adc_val) {
     Math_t *p = (Math_t *)&dsp_ctx.math;
 
-    // 1. Normalize input to Q15
     int32_t in_q15 = RawToQ15(adc_val);
 
-    // 2. Leaky processing (attenuate history)
+    // 1. 履歴の減衰 (仮数部の乗算)
     int32_t history_leaked = (p->last_q15 * p->scale_fract_q15) >> FRACTIONAL_BITS_Q15;
 
-    // 3. Dynamic Input Scaling (using the 3rd byte 'shift')
-    int32_t input_scaled = in_q15;
-    if (p->scale_shift > 0) {
-        input_scaled <<= p->scale_shift;     // Gain up (x2, x4, etc.)
-    } else if (p->scale_shift < 0) {
-        input_scaled >>= -(p->scale_shift);  // Attenuate (1/2, 1/4, etc.)
-    }
+    // 2. 入力スケーリング (指数部のシフト)
+    // 三項演算子を使うことで、コンパイラが「if文」ではなく
+    // パイプラインフラッシュの起きにくい「条件付き実行命令」に最適化しやすくなります
+    int32_t s = p->scale_shift;
+    int32_t input_scaled = (s >= 0) ? (in_q15 << s) : (in_q15 >> -s);
 
-    // 4. Accumulate new input sample
+    // 3. 累積と出力
     p->last_q15 = history_leaked + input_scaled;
-
-    // 5. Restore internal Q15 state back to raw DAC range
     return Q15ToRaw(p->last_q15);
 }
 
@@ -426,7 +431,10 @@ static inline __attribute__((always_inline)) int32_t ProcessDelay(int32_t adc_va
 // =========================================================
 // Initialization and Parameter Updates
 // =========================================================
-void MimicDSP_Init(void) {
+void MimicDSP_Init(MimicCallback_t enable_output, MimicCallback_t disable_output) {
+    cb_enable_output = enable_output;
+    cb_disable_output = disable_output;
+
     pipeline.current_mode = MIMIC_MODE_ID_BYPASS_DSP;
     pipeline.global_flags = 0;
     pipeline.out_mult_q15 = 1 << 15;
@@ -579,13 +587,6 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample_RAM
     return (uint16_t)final_out;
 }
 
-/**
- * @brief  Evaluates the current global configuration snapshot to determine the output state.
- */
-bool MimicDSP_GetOutputOpenStateFromSnapshot(void) {
-    return ((pipeline.global_flags & MIMIC_FLAG_OUT_OPEN) != 0);
-}
-
 void MimicDSP_SetDecimation(uint8_t N) {
     decimation_mask = (1U << N) - 1;
     decimation_shift = N;
@@ -643,12 +644,6 @@ void ADC_COMP_IRQHandler(void) {
         DAC1->DHR12R1 = MimicDSP_ProcessSample_RAM(raw_val);
     } else {
         // [DECIMATION & INTERPOLATION PATH]
-        uint32_t raw_val = ADC1->DR;
-
-        if (raw_val == MIMIC_ADC_MIN_VALUE || raw_val >= MIMIC_ADC_MAX_VALUE) {
-            MimicDevice_SetErrorFlag_Inline(MIMIC_STATUS_SIGNAL_SATURATION);
-        }
-
         // 32bitネイティブ演算 (キャスト不要、最速)
         adc_accumulator += raw_val;
         decimation_count++;
@@ -697,4 +692,33 @@ void ADC_COMP_IRQHandler(void) {
     }
     MimicDevice_UpdateCpuCyclesMax_Inline(cycles);
 #endif
+}
+
+void MimicDSP_ProcessPendingTasks(void) {
+    if (mimic_device.pending_system_command != MIMIC_CMD_NOP) {
+        switch (mimic_device.pending_system_command) {
+            case MIMIC_CMD_NVM_COMMIT:
+                MimicFlash_WriteGainQ15Data(MimicDevice_GetRegU16(MIMIC_REG_NVM_GAIN_Q15));
+                MimicFlash_WriteOffsetData(MimicDevice_GetRegS16(MIMIC_REG_NVM_OFFSET));
+                break;
+            case MIMIC_CMD_NVM_RELOAD:
+                MimicDevice_LoadCalibration();
+                break;
+        }
+        mimic_device.pending_system_command = MIMIC_CMD_NOP;
+    }
+
+    // 1. Minimum necessary background processing
+    if (mimic_device.i2c_dirty_flag) {
+        HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
+        cb_disable_output();
+
+        MimicDSP_UpdateParameters();
+
+        MimicDevice_AcknowledgeUpdate();
+        if ((pipeline.global_flags & MIMIC_FLAG_OUT_OPEN) == 0) {
+            cb_enable_output();
+        }
+        HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
+    }
 }

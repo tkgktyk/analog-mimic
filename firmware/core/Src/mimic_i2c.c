@@ -34,21 +34,13 @@
 
 // I2C Reception state (1-byte at a time)
 static uint8_t current_reg_addr = 0;
-static uint8_t is_reg_addr_received = 0;
-static volatile uint8_t is_dsp_update_required = 0;
+static bool is_reg_addr_received = 0;
+static volatile bool is_dsp_update_required = 0;
+static volatile uint8_t latched_system_command = 0;
 
 // =========================================================
 // Initialization
 // =========================================================
-
-static void ReloadCalibRam(void) {
-  uint16_t gain_q15 = MimicFlash_ReadGainQ15Data();
-  mimic_device.registers[MIMIC_REG_NVM_GAIN_Q15_H] = (uint8_t)(gain_q15 >> 8);
-  mimic_device.registers[MIMIC_REG_NVM_GAIN_Q15_L] = (uint8_t)(gain_q15 & 0xFF);
-  int16_t offset = MimicFlash_ReadOffsetData();
-  mimic_device.registers[MIMIC_REG_NVM_OFFSET_H] = (uint8_t)(offset >> 8);
-  mimic_device.registers[MIMIC_REG_NVM_OFFSET_L] = (uint8_t)(offset & 0xFF);
-}
 
 /**
  * @brief Initializes the I2C request handler variables.
@@ -56,9 +48,7 @@ static void ReloadCalibRam(void) {
  */
 void MimicI2c_Init(void) {
   current_reg_addr = 0;
-  is_reg_addr_received = 0;
-
-  ReloadCalibRam();
+  is_reg_addr_received = false;
 }
 
 // =========================================================
@@ -83,7 +73,7 @@ void I2C1_IRQHandler(void) {
     if ((sr2_val & I2C_SR2_TRA) == 0) {
       // Master requests a WRITE operation (Slave receives data)
       // The incoming initial byte must be interpreted as the target register address.
-      is_reg_addr_received = 0; 
+      is_reg_addr_received = false;
     } else {
       // Master requests a READ operation (Slave transmits data)
       // Prepare transmission buffer based on the pre-latched current_reg_addr.
@@ -98,17 +88,21 @@ void I2C1_IRQHandler(void) {
   if (LL_I2C_IsActiveFlag_RXNE(I2C1)) {
     uint8_t rx_data = LL_I2C_ReceiveData8(I2C1);
     
-    if (is_reg_addr_received == 0) {
+    if (is_reg_addr_received == false) {
       // Byte 1 represents the operation target register address pointer
       current_reg_addr = rx_data;
-      is_reg_addr_received = 1;
+      is_reg_addr_received = true;
     } else {
       // Byte 2 and subsequent bytes contain payload data; push to shadow register
       if (current_reg_addr < MIMIC_REG_SHADOW_SIZE) {
         if (MimicI2c_WriteReg(current_reg_addr, rx_data)) {
           // Raise update trigger indicating a DSP parameter reconfiguration
-          is_dsp_update_required = 1; 
+          is_dsp_update_required = true; 
         }
+        current_reg_addr++;
+      } else if (current_reg_addr == MIMIC_REG_CMD_PORT) {
+        // 2. コマンド処理
+        latched_system_command = rx_data;
         current_reg_addr++;
       } else {
         MimicDevice_SetStatusFlag(MIMIC_STATUS_I2C_COM_ERR);
@@ -134,8 +128,13 @@ void I2C1_IRQHandler(void) {
     
     // Notify the main thread if any runtime parameters were altered during transaction
     if (is_dsp_update_required) {
-      mimic_device.i2c_dirty_flag = 1;
-      is_dsp_update_required = 0;
+      mimic_device.i2c_dirty_flag = true;
+      is_dsp_update_required = false;
+    }
+
+    if (latched_system_command != MIMIC_CMD_NOP) {
+      mimic_device.pending_system_command = latched_system_command;
+      latched_system_command = MIMIC_CMD_NOP;
     }
   }
 
@@ -169,27 +168,15 @@ void I2C1_IRQHandler(void) {
  * @param val The value to write.
  */
 bool MimicI2c_WriteReg(uint8_t reg, uint8_t val) {
-  // 1. Read-Only 領域 (0x00 - 0x0F) および範囲外アクセスはエラー
-  if (reg < MIMIC_REG_GLOBAL_START || reg >= MIMIC_REG_SHADOW_SIZE) {
-    MimicDevice_SetStatusFlag(MIMIC_STATUS_I2C_COM_ERR);
-    return false;
+  // 正常な書き込みはそのままRAMに反映
+  if (reg >= MIMIC_REG_GLOBAL_START && reg < MIMIC_REG_SHADOW_SIZE) {
+    mimic_device.registers[reg] = val;
+    return true;
   }
 
-  // 2. NVMコントロール (0x3F) のコマンド処理
-  if (reg == MIMIC_REG_NVM_CTRL) {
-    if (val == MIMIC_NVM_CMD_SAVE) {
-      // registers配列から直接16bit結合して保存
-      MimicFlash_WriteOffsetData(MimicDevice_GetRegS16(MIMIC_REG_NVM_OFFSET));
-    } 
-    else if (val == MIMIC_NVM_CMD_RELOAD) {
-      ReloadCalibRam();
-    }
-    return true; // コマンドレジスタ自体には値を残さなくてよい
-  }
-
-  // 3. それ以外の正常な書き込み (0x10 - 0x33 等) はそのままRAMに反映
-  mimic_device.registers[reg] = val;
-  return true;
+  // Read-Only 領域 (0x00 - 0x0F) および範囲外アクセスはエラー
+  MimicDevice_SetStatusFlag(MIMIC_STATUS_I2C_COM_ERR);
+  return false;
 }
 
 /**

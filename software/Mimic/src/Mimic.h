@@ -281,6 +281,10 @@ public:
 
   void setOffsetCal(int16_t offset);
 
+  void commitCalibrationToNvm(void);
+
+  void reloadCalibrationFromNvm(void);
+
 protected:
   MimicBase(uint16_t vddMv, uint8_t hardwareJumper = 0);
 

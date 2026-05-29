@@ -71,23 +71,24 @@ static bool WritePage(uint32_t addr, const uint8_t *ram_page_buffer)
  * @return false      書き込み失敗
  */
 static bool WriteCalibrationData(uint32_t page_offset, const void *data, size_t size) {
-    /* 1ページ分（128バイト）のスタックバッファを用意 */
-    uint8_t ram_page_buffer[FLASH_PAGE_SIZE];
+    /* 修正：32bit型で配列を宣言し、要素数は 1/4 にする */
+    uint32_t ram_page_buffer[FLASH_PAGE_SIZE / 4];
     uint32_t addr = MIMIC_FLASH_CALIB_PAGE_ADDR;
 
     /* 1. 現在のフラッシュ内容をRAMバッファに直接コピー */
-    ReadPage(addr, ram_page_buffer);
+    ReadPage(addr, (uint8_t *)ram_page_buffer);
 
     /* 2. 引数で指定された位置に、指定サイズ分のデータを直接上書き */
     // 安全のため、バッファオーバーラン防止のガードを入れておくと完璧です
     if (page_offset + size <= FLASH_PAGE_SIZE) {
-        memcpy(&ram_page_buffer[page_offset], data, size);
+        uint8_t *byte_ptr = (uint8_t *)ram_page_buffer;
+        memcpy(&byte_ptr[page_offset], data, size);
     } else {
         return false; // ページサイズをはみ出す場合は書き込まずにエラー
     }
 
     /* 3. 割り込みを禁止し、消去からフラッシュ書き込みまでを一気に行う */
-    return WritePage(addr, ram_page_buffer);
+    return WritePage(addr, (const uint8_t *)ram_page_buffer);
 }
 
 bool MimicFlash_WriteGainQ15Data(uint16_t gain) {

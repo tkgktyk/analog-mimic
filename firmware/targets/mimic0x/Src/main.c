@@ -61,7 +61,6 @@ static void MX_ADC1_Init(void);
 static void MX_DAC_Init(void);
 static void MX_TIM3_Init(void); // For sampling frequency
 static void MX_OPA_Init(void);
-static void SetOutputOpen(bool open_enabled);
 
 // =========================================================
 // Global Variables
@@ -74,6 +73,15 @@ TIM_HandleTypeDef htim3;
 OPA_HandleTypeDef hopa1;
 OPA_HandleTypeDef hopa2;
 OPA_HandleTypeDef hopa3;
+
+// Implements specific hardware control requested by the core for "OPEN state"
+void MimicCallback_DisableOutput(void) {
+    HAL_OPA_Stop(&hopa2);
+}
+
+void MimicCallback_EnableOutput(void) {
+    HAL_OPA_Start(&hopa2); 
+}
 
 // =========================================================
 // Main Routine
@@ -92,7 +100,8 @@ int main(void) {
 
   // Initialize Analog Mimic Core Logic
   MimicI2c_Init();
-  MimicDSP_Init();
+  MimicDSP_Init(&MimicCallback_EnableOutput, &MimicCallback_DisableOutput);
+  MimicDevice_LoadCalibration();
 
   // Relocate vector table to RAM
   RelocateVectorTableToRAM();
@@ -110,13 +119,7 @@ int main(void) {
 
   // Main background loop
   while (1) {
-    // 1. Minimum necessary background processing
-    if (MimicDevice_IsI2cDirty()) {
-        SetOutputOpen(true);
-        MimicDSP_UpdateParameters();
-        bool next_output_state = MimicDevice_AcknowledgeUpdate();
-        SetOutputOpen(next_output_state);
-    }
+    MimicDSP_ProcessPendingTasks();
 
     // 2. Execute WFI (Wait For Interrupt).
     // When a sampling interrupt (TIM3) occurs here, it will jump to the ISR 
@@ -350,18 +353,6 @@ static void MX_GPIO_Init(void) {
   __HAL_RCC_GPIOF_CLK_ENABLE();
 }
 
-// Implements specific hardware control requested by the core for "OPEN state"
-static void SetOutputOpen(bool open_enabled) {
-    if (open_enabled) {
-        HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
-        // Stop OPA2 to make it high-impedance (OPEN)
-        HAL_OPA_Stop(&hopa2); 
-    } else {
-        // Resume OPA2 to drive output
-        HAL_OPA_Start(&hopa2); 
-        HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
-    }
-}
 
 /**
  * @brief  Error executing function.

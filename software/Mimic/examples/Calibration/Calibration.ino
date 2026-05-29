@@ -44,6 +44,7 @@ void loop() {
 
   waitForEnter();
   runCalibration();
+  commitCalibration();
 }
 
 /**
@@ -70,6 +71,60 @@ void waitForEnter() {
   }
 }
 
+void commitCalibration() {
+  // 既存の補正値を取得（Q15から通常のfloat倍率に戻しておく）
+  // ※getTwoByte から getTwoBytes に関数名を合わせました
+  int gain_q15 = mimic.getTwoBytes(MIMIC_REG_NVM_GAIN_Q15);
+  int current_offset = mimic.getTwoBytes(MIMIC_REG_NVM_OFFSET);
+  
+  float current_gain = (float)gain_q15 / 32768.0f;
+  
+  Serial.print("Current Gain (Float): "); Serial.print(gain_q15); Serial.print("("); Serial.print(current_gain, 5); Serial.println(")");
+  Serial.print("Current Offset (LSB): "); Serial.println(current_offset);
+
+  Serial.println("\nCommit current calibration data [y/N]");
+  Serial.println("---------------------------------------------------------");
+
+  // --- ユーザーからのキー入力を待機 ---
+  char inputChar = '\0';
+  
+  while (true) {
+    if (Serial.available() > 0) {
+      char c = Serial.read();
+
+      // Enter（改行コード）が押されたら入力を評価してループを抜ける
+      if (c == '\n') {
+        // 余分な改行文字（'\r'など）をフラッシュ
+        while (Serial.available() > 0) {
+          Serial.read();
+          delay(2);
+        }
+        break; 
+      } else if (c != '\r') {
+        // 改行以外の文字（ユーザーが打った最初の1文字）を記録
+        if (inputChar == '\0') {
+          inputChar = c; 
+        }
+      }
+    }
+    delay(1);
+  }
+
+  // --- 入力された文字に応じた分岐処理 ---
+  if (inputChar == 'y' || inputChar == 'Y') {
+    Serial.println("\n[Writing] Saving final calibration parameters permanently to NVM...");
+    
+    // I2C経由でマイコンにフラッシュ保存を指示
+    mimic.commitCalibrationToNvm();
+    mimic.reloadCalibrationFromNvm();
+    Serial.println(">> SUCCESS: Calibration permanently fixed to Flash memory!");
+  } else {
+    // 'n' や 'N'、あるいは何も入れずにEnterを押した場合はスキップ
+    Serial.println("\n>> Skipped: Calibration data was NOT saved to NVM.");
+  }
+  Serial.println("==========================================");
+}
+
 void runCalibration() {
   Serial.println("\n--- Starting High-Precision Measurement (Gain & Offset) ---");
 
@@ -79,7 +134,7 @@ void runCalibration() {
   
   float current_gain = (float)gain_q15 / 32768.0f;
   
-  Serial.print("Current Gain (Float): "); Serial.println(current_gain, 5);
+  Serial.print("Current Gain (Float): "); Serial.print(gain_q15); Serial.print("("); Serial.print(current_gain, 5); Serial.println(")");
   Serial.print("Current Offset (LSB): "); Serial.println(current_offset);
 
   float sumX  = 0.0;

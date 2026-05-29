@@ -109,7 +109,7 @@ uint8_t MimicBase::getOneByte(uint8_t addr) {
     return readRegister8(addr);
 }
 
-uint16_t MimicBase::getTwoByte2(uint8_t addr) {
+uint16_t MimicBase::getTwoBytes(uint8_t addr) {
     return readRegister16(addr);
 }
 
@@ -566,6 +566,22 @@ void MimicBase::setOffsetCal(int16_t offset) {
   // 符号付き int16_t のままビット列としてキャストし、2バイトのデータとして扱う
   // 例: -1 -> 0xFFFF, +5 -> 0x0005
   writeTwoBytes(MIMIC_REG_NVM_OFFSET, (uint16_t)offset);
+}
+
+/**
+ * @brief 現在RAM上にある校正パラメータを、マイコン内部のFLASHメモリへ永久保存する
+ */
+void MimicBase::commitCalibrationToNvm(void) {
+  // 1. NVMコントロールレジスタ（0x3F）に対して、セーブコマンド（0xA5）を発行
+  writeOneByte(MIMIC_REG_CMD_PORT, MIMIC_CMD_NVM_COMMIT);
+}
+
+/**
+ * @brief 現在RAM上にある校正パラメータを、マイコン内部のFLASHメモリへ永久保存する
+ */
+void MimicBase::reloadCalibrationFromNvm(void) {
+  // 1. NVMコントロールレジスタ（0x3F）に対して、セーブコマンド（0xA5）を発行
+  writeOneByte(MIMIC_REG_CMD_PORT, MIMIC_CMD_NVM_RELOAD);
 }
 
 // =========================================================

@@ -30,6 +30,8 @@
 extern "C" {
 #endif
 
+typedef void (*MimicCallback_t)(void);
+
 // =========================================================
 // Initialization and Main Loop
 // =========================================================
@@ -38,20 +40,14 @@ extern "C" {
  * @brief Initializes the DSP core memory space and internal state variables.
  * @note  Clears biquad delay lines and resets tracking waveform latches to default.
  */
-void MimicDSP_Init(void);
+void MimicDSP_Init(MimicCallback_t enable_output, MimicCallback_t disable_output);
 
 /**
  * @brief Applies parameters acquired via I2C to the internal DSP mathematical models.
  * @note  Typically called from within MimicDSP_ProcessLoop() while hardware
  * analog outputs are safely isolated.
  */
-void MimicDSP_UpdateParameters(void);
-
-/**
- * @brief  Evaluates the current global configuration snapshot to determine the output state.
- * @return true if the output path should be opened (muted), false otherwise.
- */
-bool MimicDSP_GetOutputOpenStateFromSnapshot(void);
+void MimicDSP_ProcessPendingTasks(void);
 
 void MimicDSP_SetDecimation(uint8_t N);
 

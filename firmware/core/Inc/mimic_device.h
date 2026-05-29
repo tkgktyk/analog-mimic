@@ -46,7 +46,8 @@ typedef struct {
   volatile uint8_t status;                             /**< Bitfield containing current system flags and transient errors */
   volatile uint16_t adc_val;                           /**< Latest raw data acquired from the ADC input channel */
   volatile uint16_t cpu_cycles_max;                    /**< Peak-hold execution cycle counter for profiling */
-  volatile uint8_t i2c_dirty_flag;                     /**< Semaphore flag indicating a parameter update is requested */
+  volatile bool i2c_dirty_flag;                     /**< Semaphore flag indicating a parameter update is requested */
+  volatile uint8_t pending_system_command;
 } MimicDevice_t;
 
 /**
@@ -107,21 +108,14 @@ uint16_t MimicDevice_GetAdcVal(void);
  */
 uint16_t MimicDevice_GetAndClearCpuCyclesMax(void);
 
-/**
- * @brief Checks if a parameter update has been requested via I2C.
- * @return true if the I2C dirty flag is set, false otherwise.
- */
-static inline __attribute__((always_inline)) bool MimicDevice_IsI2cDirty(void) {
-    return (mimic_device.i2c_dirty_flag != 0);
-}
+void MimicDevice_LoadCalibration(void);
 
 /**
  * @brief  Acknowledges the completion of the I2C parameter update transaction.
- * @return true if the hardware output path should be opened, false otherwise.
  * @note   This function safely handles flag manipulation under critical section 
  * and resolves the next physical hardware state required by the DSP context.
  */
-bool MimicDevice_AcknowledgeUpdate(void);
+void MimicDevice_AcknowledgeUpdate(void);
 
 // =========================================================
 // Fast Inline Accessors for High-Frequency ISRs

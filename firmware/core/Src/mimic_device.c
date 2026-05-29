@@ -23,7 +23,7 @@
 
 #include "mimic_device.h"
 #include "py32f0xx_hal.h"
-#include "mimic_dsp.h"
+#include "mimic_flash.h"
 
 /**
  * @brief  Executes a code block with interrupts disabled, restoring the original 
@@ -46,7 +46,8 @@ MimicDevice_t mimic_device = {
     .status = 0x00,
     .adc_val = 2048, // Initialized to mid-scale analog ground (Vref/2) for safety
     .cpu_cycles_max = 0,
-    .i2c_dirty_flag = 0};
+    .i2c_dirty_flag = false,
+    .pending_system_command = MIMIC_CMD_NOP};
 
 // =========================================================
 // Thread-Safe State Management APIs
@@ -103,14 +104,21 @@ uint16_t MimicDevice_GetAndClearCpuCyclesMax(void) {
   return max_cycles;
 }
 
+void MimicDevice_LoadCalibration(void) {
+  uint16_t gain_q15 = MimicFlash_ReadGainQ15Data();
+  mimic_device.registers[MIMIC_REG_NVM_GAIN_Q15_H] = (uint8_t)(gain_q15 >> 8);
+  mimic_device.registers[MIMIC_REG_NVM_GAIN_Q15_L] = (uint8_t)(gain_q15 & 0xFF);
+  int16_t offset = MimicFlash_ReadOffsetData();
+  mimic_device.registers[MIMIC_REG_NVM_OFFSET_H] = (uint8_t)(offset >> 8);
+  mimic_device.registers[MIMIC_REG_NVM_OFFSET_L] = (uint8_t)(offset & 0xFF);
+}
+
 /**
  * @brief  Acknowledges the completion of the I2C parameter update transaction.
  */
-bool MimicDevice_AcknowledgeUpdate(void) {
+void MimicDevice_AcknowledgeUpdate(void) {
   CRITICAL_SECTION_BLOCK(
     mimic_device.i2c_dirty_flag = 0;
     mimic_device.cpu_cycles_max = 0;
   );
-
-  return ((MimicDSP_GetOutputOpenStateFromSnapshot() & MIMIC_FLAG_OUT_OPEN) != 0);
 }
