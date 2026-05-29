@@ -47,21 +47,6 @@ void MimicI2C_Init(void);
  */
 void MimicI2C_IRQHandler_LL(void);
 
-/**
- * @brief Writes a value to a specified I2C shadow register.
- * @param reg The register address to write to.
- * @param val The value to write.
- * @return true if the write was successful, false if out of bounds.
- */
-bool MimicI2C_WriteReg(uint8_t reg, uint8_t val);
-
-/**
- * @brief Reads a value from a specified I2C register or internal virtual register.
- * @param reg The register address to read from.
- * @return The value of the requested register, or 0xFF on error.
- */
-uint8_t MimicI2C_ReadReg(uint8_t reg);
-
 #ifdef __cplusplus
 }
 #endif
