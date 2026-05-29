@@ -128,12 +128,12 @@ void I2C1_IRQHandler(void) {
     
     // Notify the main thread if any runtime parameters were altered during transaction
     if (is_dsp_update_required) {
-      mimic_device.i2c_dirty_flag = true;
+      MimicDevice_RequestUpdate();
       is_dsp_update_required = false;
     }
 
     if (latched_system_command != MIMIC_CMD_NOP) {
-      mimic_device.pending_system_command = latched_system_command;
+      MimicDevice_RequestSystemCommand(latched_system_command);
       latched_system_command = MIMIC_CMD_NOP;
     }
   }
@@ -164,13 +164,13 @@ void I2C1_IRQHandler(void) {
 
 /**
  * @brief Writes a value to a specified I2C shadow register.
- * @param reg The register address to write to.
+ * @param addr The register address to write to.
  * @param val The value to write.
  */
-bool MimicI2c_WriteReg(uint8_t reg, uint8_t val) {
+bool MimicI2c_WriteReg(uint8_t addr, uint8_t val) {
   // 正常な書き込みはそのままRAMに反映
-  if (reg >= MIMIC_REG_GLOBAL_START && reg < MIMIC_REG_SHADOW_SIZE) {
-    mimic_device.registers[reg] = val;
+  if (addr >= MIMIC_REG_GLOBAL_START && addr < MIMIC_REG_SHADOW_SIZE) {
+    MimicDevice_WriteReg(addr, val);
     return true;
   }
 
@@ -181,15 +181,15 @@ bool MimicI2c_WriteReg(uint8_t reg, uint8_t val) {
 
 /**
  * @brief Reads a value from a specified I2C register or internal virtual register.
- * @param reg The register address to read from.
+ * @param addr The register address to read from.
  * @return The value of the requested register, or I2C_READ_ERROR_VALUE on error.
  */
-uint8_t MimicI2c_ReadReg(uint8_t reg) {
+uint8_t MimicI2c_ReadReg(uint8_t addr) {
   static uint16_t latched_adc_val = 0;
   static uint16_t latched_cpu_cycles = 0;
 
   // 1. Intercept and resolve specialized virtual registers (Read-Only Info & Telemetry)
-  switch (reg) {
+  switch (addr) {
   // --- Static System Information (0x00 - 0x02) ---
   case MIMIC_REG_SYSTEM_ID:
     return MIMIC_DEVICE_ID_VALUE;
@@ -200,7 +200,7 @@ uint8_t MimicI2c_ReadReg(uint8_t reg) {
 
   // --- Dynamic Telemetry (0x03) ---
   case MIMIC_REG_SYSTEM_STATUS:
-    return MimicDevice_GetAndClearStatus();
+    return MimicDevice_GetAndClearStatusFlag();
 
   // --- 16-bit Bound Live ADC Sample Read Out (0x04 - 0x05) ---
   case MIMIC_REG_SYSTEM_ADC_VAL_H:
@@ -211,7 +211,7 @@ uint8_t MimicI2c_ReadReg(uint8_t reg) {
 
   // --- 16-bit Execution Profiler Cycle Count Read Out (0x06 - 0x07) ---
   case MIMIC_REG_SYSTEM_CPU_CYCLES_H:
-    latched_cpu_cycles = MimicDevice_GetAndClearCpuCyclesMax(); // Fetch peak hold and clear atomicity
+    latched_cpu_cycles = MimicDevice_PopCpuCyclesMax(); // Fetch peak hold and clear atomicity
     return (uint8_t)(latched_cpu_cycles >> 8);
   case MIMIC_REG_SYSTEM_CPU_CYCLES_L:
     return (uint8_t)(latched_cpu_cycles & 0xFF);
@@ -221,9 +221,9 @@ uint8_t MimicI2c_ReadReg(uint8_t reg) {
   }
 
   // 2. Handle all remaining spaces (Global, Mode, Payload, NVM) via standard memory map
-  if (reg < MIMIC_REG_SHADOW_SIZE) {
+  if (addr < MIMIC_REG_SHADOW_SIZE) {
     // 0x10〜0x3F までのアクセスは、ここで自動的にRAMの値を返す（NVMの校正値も含む！）
-    return mimic_device.registers[reg];
+    return MimicDevice_ReadRegU8(addr);
   }
 
   // 3. Out of bounds access (0x40以上)

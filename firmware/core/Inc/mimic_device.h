@@ -50,31 +50,42 @@ typedef struct {
   volatile uint8_t pending_system_command;
 } MimicDevice_t;
 
-/**
- * @brief Global instantiation of the shared device state context.
- * @note  Exposed for absolute performance (inlining), but DIRECT member access 
- * from other files is strictly prohibited! Use _Inline accessors instead.
- */
-extern MimicDevice_t mimic_device;
-
 // =========================================================
 // Parameter Decoding Utilities (Big-Endian)
 // =========================================================
 
+// C言語の static inline は、コンパイル時に「関数呼び出し」ではなく
+// 「直接のメモリアクセス」に展開されるため、オーバーヘッドは完全にゼロ（0クロック）です。
+static inline __attribute__((always_inline)) uint8_t MimicDevice_ReadRegU8(uint8_t reg) {
+    extern MimicDevice_t mimic_device; // 実体への参照
+    return mimic_device.registers[reg];
+}
+
+static inline __attribute__((always_inline)) int8_t MimicDevice_ReadRegS8(uint8_t reg) {
+    extern MimicDevice_t mimic_device; // 実体への参照
+    return (int8_t)mimic_device.registers[reg];
+}
+
 /**
  * @brief Retrieves an unsigned 16-bit parameter from the device registry.
  */
-static inline __attribute__((always_inline)) uint16_t MimicDevice_GetRegU16(uint8_t start_reg) {
+static inline __attribute__((always_inline)) uint16_t MimicDevice_ReadRegU16(uint8_t start_reg) {
+    extern MimicDevice_t mimic_device; // 実体への参照
     return (uint16_t)((mimic_device.registers[start_reg] << 8) | mimic_device.registers[start_reg + 1]);
 }
 
 /**
  * @brief Retrieves a signed 16-bit parameter with guaranteed sign extension.
  */
-static inline __attribute__((always_inline)) int32_t MimicDevice_GetRegS16(uint8_t start_reg) {
+static inline __attribute__((always_inline)) int32_t MimicDevice_ReadRegS16(uint8_t start_reg) {
+    extern MimicDevice_t mimic_device; // 実体への参照
     return (int32_t)(int16_t)((mimic_device.registers[start_reg] << 8) | mimic_device.registers[start_reg + 1]);
 }
 
+static inline __attribute__((always_inline)) void MimicDevice_WriteReg(uint8_t addr, uint8_t val) {
+    extern MimicDevice_t mimic_device;
+    mimic_device.registers[addr] = val;
+}
 
 // =========================================================
 // Thread-Safe Accessor APIs
@@ -92,30 +103,62 @@ void MimicDevice_SetStatusFlag(uint8_t flag);
  * @return The current state of the status register prior to flushing.
  * @note  This operation is atomic. Retains foundational system states (e.g., READY).
  */
-uint8_t MimicDevice_GetAndClearStatus(void);
+uint8_t MimicDevice_GetAndClearStatusFlag(void);
 
 /**
  * @brief Retrieves the latest sampled ADC value from the device context.
  * @return Raw 12-bit ADC data (0 - 4095).
  * @note  This read access is inherently atomic on 32-bit Cortex-M core architectures.
  */
-uint16_t MimicDevice_GetAdcVal(void);
+static inline __attribute__((always_inline)) uint16_t MimicDevice_GetAdcVal(void) {
+    extern MimicDevice_t mimic_device;
+    return mimic_device.adc_val;
+}
 
 /**
  * @brief Retrieves the peak CPU cycle execution count and resets the tracking value to 0.
  * @return The maximum recorded CPU cycles since the previous read operation.
  * @note  This operation is atomic to prevent the sampling ISR from writing intermediate data.
  */
-uint16_t MimicDevice_GetAndClearCpuCyclesMax(void);
+static inline __attribute__((always_inline)) uint16_t MimicDevice_PopCpuCyclesMax(void) {
+  extern MimicDevice_t mimic_device;
+  uint16_t max_cycles = mimic_device.cpu_cycles_max;
+  mimic_device.cpu_cycles_max = 0; // Reset upon retrieval
+
+  return max_cycles;
+}
 
 void MimicDevice_LoadCalibration(void);
 
 /**
- * @brief  Acknowledges the completion of the I2C parameter update transaction.
- * @note   This function safely handles flag manipulation under critical section 
- * and resolves the next physical hardware state required by the DSP context.
+ * @brief 保留中のシステムコマンドを取得し、キュー（フラグ）をクリアする
  */
-void MimicDevice_AcknowledgeUpdate(void);
+static inline __attribute__((always_inline)) uint8_t MimicDevice_PopSystemCommand(void) {
+    extern MimicDevice_t mimic_device;
+    uint8_t cmd = mimic_device.pending_system_command;
+    mimic_device.pending_system_command = 0; // 0 = MIMIC_CMD_NOP
+    return cmd;
+}
+
+static inline __attribute__((always_inline)) void MimicDevice_RequestSystemCommand(uint8_t cmd) {
+    extern MimicDevice_t mimic_device;
+    mimic_device.pending_system_command = cmd;
+}
+
+/**
+ * @brief DSPパラメータ更新要求があるか確認し、フラグをクリアする
+ */
+static inline __attribute__((always_inline)) bool MimicDevice_PopUpdateFlag(void) {
+    extern MimicDevice_t mimic_device;
+    bool flag = mimic_device.i2c_dirty_flag;
+    mimic_device.i2c_dirty_flag = false;
+    return flag;
+}
+
+static inline __attribute__((always_inline)) void MimicDevice_RequestUpdate(void) {
+    extern MimicDevice_t mimic_device;
+    mimic_device.i2c_dirty_flag = true;
+}
 
 // =========================================================
 // Fast Inline Accessors for High-Frequency ISRs
@@ -126,7 +169,8 @@ void MimicDevice_AcknowledgeUpdate(void);
  * @param  raw_val Raw 12-bit ADC value.
  * @note   Inlined directly into the ISR to eliminate function call penalties.
  */
-static inline __attribute__((always_inline)) void MimicDevice_SetAdcVal_Inline(uint16_t raw_val) {
+static inline __attribute__((always_inline)) void MimicDevice_SetAdcVal_ISR(uint16_t raw_val) {
+    extern MimicDevice_t mimic_device; // 実体への参照
     mimic_device.adc_val = raw_val;
 }
 
@@ -134,7 +178,8 @@ static inline __attribute__((always_inline)) void MimicDevice_SetAdcVal_Inline(u
  * @brief  Ors the status register with the specified error flags.
  * @param  error_flag Transient or persistent error flag to set.
  */
-static inline __attribute__((always_inline)) void MimicDevice_SetErrorFlag_Inline(uint8_t error_flag) {
+static inline __attribute__((always_inline)) void MimicDevice_SetErrorFlag_ISR(uint8_t error_flag) {
+    extern MimicDevice_t mimic_device; // 実体への参照
     mimic_device.status |= error_flag;
 }
 
@@ -142,7 +187,8 @@ static inline __attribute__((always_inline)) void MimicDevice_SetErrorFlag_Inlin
  * @brief  Updates the maximum recorded CPU cycles if the new value is higher.
  * @param  cycles Measured CPU cycles for the current execution.
  */
-static inline __attribute__((always_inline)) void MimicDevice_UpdateCpuCyclesMax_Inline(uint32_t cycles) {
+static inline __attribute__((always_inline)) void MimicDevice_UpdateCpuCyclesMax_ISR(uint32_t cycles) {
+    extern MimicDevice_t mimic_device; // 実体への参照
     if (cycles > mimic_device.cpu_cycles_max) {
         mimic_device.cpu_cycles_max = (uint16_t)cycles;
     }

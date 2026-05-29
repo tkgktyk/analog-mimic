@@ -69,7 +69,7 @@ void MimicDevice_SetStatusFlag(uint8_t flag) {
  * @brief Retrieves the status and clears transient error flags atomically.
  * Called primarily when the I2C master reads the STATUS register.
  */
-uint8_t MimicDevice_GetAndClearStatus(void) {
+uint8_t MimicDevice_GetAndClearStatusFlag(void) {
   uint8_t current_status;
   
   CRITICAL_SECTION_BLOCK(
@@ -81,29 +81,6 @@ uint8_t MimicDevice_GetAndClearStatus(void) {
   return current_status;
 }
 
-/**
- * @brief Retrieves the latest ADC converted value.
- */
-uint16_t MimicDevice_GetAdcVal(void) {
-  // A 16-bit aligned read access is atomic on a 32-bit architecture;
-  // therefore, disabling interrupts is unnecessary here.
-  return mimic_device.adc_val;
-}
-
-/**
- * @brief Retrieves the maximum CPU cycle count and resets the peak-hold tracker.
- */
-uint16_t MimicDevice_GetAndClearCpuCyclesMax(void) {
-  uint16_t max_cycles;
-
-  CRITICAL_SECTION_BLOCK(
-    max_cycles = mimic_device.cpu_cycles_max;
-    mimic_device.cpu_cycles_max = 0; // Reset upon retrieval
-  );
-
-  return max_cycles;
-}
-
 void MimicDevice_LoadCalibration(void) {
   uint16_t gain_q15 = MimicFlash_ReadGainQ15Data();
   mimic_device.registers[MIMIC_REG_NVM_GAIN_Q15_H] = (uint8_t)(gain_q15 >> 8);
@@ -111,14 +88,4 @@ void MimicDevice_LoadCalibration(void) {
   int16_t offset = MimicFlash_ReadOffsetData();
   mimic_device.registers[MIMIC_REG_NVM_OFFSET_H] = (uint8_t)(offset >> 8);
   mimic_device.registers[MIMIC_REG_NVM_OFFSET_L] = (uint8_t)(offset & 0xFF);
-}
-
-/**
- * @brief  Acknowledges the completion of the I2C parameter update transaction.
- */
-void MimicDevice_AcknowledgeUpdate(void) {
-  CRITICAL_SECTION_BLOCK(
-    mimic_device.i2c_dirty_flag = 0;
-    mimic_device.cpu_cycles_max = 0;
-  );
 }

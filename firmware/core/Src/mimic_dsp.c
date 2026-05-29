@@ -447,13 +447,13 @@ void MimicDSP_Init(MimicCallback_t enable_output, MimicCallback_t disable_output
 void MimicDSP_UpdateParameters(void) {
     uint8_t previous_mode = pipeline.current_mode;
 
-    pipeline.global_flags = mimic_device.registers[MIMIC_REG_GLOBAL_FLAGS];
-    pipeline.current_mode = mimic_device.registers[MIMIC_REG_MODE_ID];
+    pipeline.global_flags = MimicDevice_ReadRegU8(MIMIC_REG_GLOBAL_FLAGS);
+    pipeline.current_mode = MimicDevice_ReadRegU8(MIMIC_REG_MODE_ID);
 
     // --- Global Parameters ---
-    MimicDSP_SetDecimation(mimic_device.registers[MIMIC_REG_GLOBAL_DECIMATION_N]);
-    int32_t global_gain_q15 = (int32_t)MimicDevice_GetRegU16(MIMIC_REG_NVM_GAIN_Q15);
-    int32_t global_output_shift_raw = MimicDevice_GetRegS16(MIMIC_REG_GLOBAL_OFFSET) + MimicDevice_GetRegS16(MIMIC_REG_NVM_OFFSET);
+    MimicDSP_SetDecimation(MimicDevice_ReadRegU8(MIMIC_REG_GLOBAL_DECIMATION_N));
+    int32_t global_gain_q15 = (int32_t)MimicDevice_ReadRegU16(MIMIC_REG_NVM_GAIN_Q15);
+    int32_t global_output_shift_raw = MimicDevice_ReadRegS16(MIMIC_REG_GLOBAL_OFFSET) + MimicDevice_ReadRegS16(MIMIC_REG_NVM_OFFSET);
 
     // Pre-calculate inversion and offsets
     if (pipeline.global_flags & MIMIC_FLAG_INV_OUT) {
@@ -474,48 +474,48 @@ void MimicDSP_UpdateParameters(void) {
     // --- Mode Specific Parameters (Successfully Unified into dsp_ctx) ---
     switch (pipeline.current_mode) {
         case MIMIC_MODE_ID_FILTER_BIQUAD:
-            dsp_ctx.bq.b0 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.bq.b1 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 2);
-            dsp_ctx.bq.b2 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 4);
-            dsp_ctx.bq.a1 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 6);
-            dsp_ctx.bq.a2 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 8);
+            dsp_ctx.bq.b0 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.bq.b1 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 2);
+            dsp_ctx.bq.b2 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 4);
+            dsp_ctx.bq.a1 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 6);
+            dsp_ctx.bq.a2 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 8);
             break;
 
         case MIMIC_MODE_ID_FILTER_1ST_LPF:
         case MIMIC_MODE_ID_FILTER_1ST_HPF:
-            dsp_ctx.filter1st.alpha_q15 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.filter1st.alpha_q15 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
             break;
 
         case MIMIC_MODE_ID_PGA:
-            dsp_ctx.pga.gain_fract_q15 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.pga.gain_shift = (int8_t)mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START + 2];
-            dsp_ctx.pga.offset_q15 = RawToQ15(MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 3));
+            dsp_ctx.pga.gain_fract_q15 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.pga.gain_shift = MimicDevice_ReadRegS8(MIMIC_REG_MODE_PAYLOAD_START + 2);
+            dsp_ctx.pga.offset_q15 = RawToQ15(MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 3));
             break;
 
         case MIMIC_MODE_ID_COMPARATOR_WIN:
         case MIMIC_MODE_ID_COMPARATOR_SCHMITT:
-            dsp_ctx.comp.upper = MimicDevice_GetRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.comp.lower = MimicDevice_GetRegU16(MIMIC_REG_MODE_PAYLOAD_START + 2);
+            dsp_ctx.comp.upper = MimicDevice_ReadRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.comp.lower = MimicDevice_ReadRegU16(MIMIC_REG_MODE_PAYLOAD_START + 2);
             break;
 
         case MIMIC_MODE_ID_MATH_DERIVATIVE:
         case MIMIC_MODE_ID_MATH_INTEGRAL:
-            dsp_ctx.math.scale_fract_q15 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.math.scale_shift = (int8_t)mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START + 2];
+            dsp_ctx.math.scale_fract_q15 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.math.scale_shift = MimicDevice_ReadRegS8(MIMIC_REG_MODE_PAYLOAD_START + 2);
             break;
 
         case MIMIC_MODE_ID_SLEW_RATE_LIMITER:
             // Slew Rate Limiter smartly reuses the Math structure for its parameter layout
-            dsp_ctx.math.scale_fract_q15 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.math.scale_fract_q15 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
             break;
 
         case MIMIC_MODE_ID_CLIPPER:
-            dsp_ctx.clipper.upper = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.clipper.lower = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 2);
+            dsp_ctx.clipper.upper = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.clipper.lower = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 2);
             break;
 
         case MIMIC_MODE_ID_NONLINEAR_LUT:
-            nonlinear_lut_type = mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START + 0];
+            nonlinear_lut_type = MimicDevice_ReadRegS8(MIMIC_REG_MODE_PAYLOAD_START + 0);
             switch (nonlinear_lut_type) {
                 case MIMIC_LUT_LOG: active_lut_ptr = lut_log; break;
                 case MIMIC_LUT_ANTILOG: active_lut_ptr = lut_antilog; break;
@@ -523,21 +523,21 @@ void MimicDSP_UpdateParameters(void) {
             break;
 
         case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:
-            dsp_ctx.envelope.decay_q15 = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.envelope.polarity = mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START + 2];
+            dsp_ctx.envelope.decay_q15 = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.envelope.polarity = MimicDevice_ReadRegU8(MIMIC_REG_MODE_PAYLOAD_START + 2);
             break;
 
         case MIMIC_MODE_ID_RECTIFIER_FULL:
-            dsp_ctx.rect.vref_raw = MimicDevice_GetRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.rect.vref_raw = MimicDevice_ReadRegS16(MIMIC_REG_MODE_PAYLOAD_START + 0);
             break;
 
         case MIMIC_MODE_ID_SAMPLE_AND_HOLD:
-            dsp_ctx.sh.period_samples = MimicDevice_GetRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
-            dsp_ctx.sh.track_samples = MimicDevice_GetRegU16(MIMIC_REG_MODE_PAYLOAD_START + 2);
+            dsp_ctx.sh.period_samples = MimicDevice_ReadRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.sh.track_samples = MimicDevice_ReadRegU16(MIMIC_REG_MODE_PAYLOAD_START + 2);
             break;
 
         case MIMIC_MODE_ID_DELAY:
-            dsp_ctx.delay.delay_samples = MimicDevice_GetRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
+            dsp_ctx.delay.delay_samples = MimicDevice_ReadRegU16(MIMIC_REG_MODE_PAYLOAD_START + 0);
             if (dsp_ctx.delay.delay_samples > DELAY_BUFFER_MASK)
                 dsp_ctx.delay.delay_samples = DELAY_BUFFER_MASK;
     }
@@ -632,11 +632,11 @@ void ADC_COMP_IRQHandler(void) {
     // 3. Signal Saturation Detection
     // =========================================================================
     if (raw_val == MIMIC_ADC_MIN_VALUE || raw_val >= MIMIC_ADC_MAX_VALUE) {
-        MimicDevice_SetErrorFlag_Inline(MIMIC_STATUS_SIGNAL_SATURATION);
+        MimicDevice_SetErrorFlag_ISR(MIMIC_STATUS_SIGNAL_SATURATION);
     }
 
     if (decimation_mask == 0) {
-        MimicDevice_SetAdcVal_Inline(raw_val);
+        MimicDevice_SetAdcVal_ISR(raw_val);
 
         // =========================================================================
         // 4. DSP Processing & Preloading DAC Holding Register for the Next Cycle
@@ -655,7 +655,7 @@ void ADC_COMP_IRQHandler(void) {
             
             // シフト結果も32bitで保持
             uint32_t x_in = adc_accumulator >> decimation_shift;
-            MimicDevice_SetAdcVal_Inline(x_in); 
+            MimicDevice_SetAdcVal_ISR(x_in); 
 
             y_old = y_new;
             y_new = MimicDSP_ProcessSample_RAM(x_in);
@@ -677,7 +677,7 @@ void ADC_COMP_IRQHandler(void) {
     // Defer to the end of the ISR as this condition occurs with extreme rarity.
     // =========================================================================
     if (ADC1->SR & ADC_SR_OVER) {
-        MimicDevice_SetErrorFlag_Inline(MIMIC_STATUS_ADC_OVER_ERR);
+        MimicDevice_SetErrorFlag_ISR(MIMIC_STATUS_ADC_OVER_ERR);
         // Clear flag directly via peripheral register instead of HAL macro
         ADC1->SR = ADC_SR_OVER; 
     }
@@ -690,32 +690,32 @@ void ADC_COMP_IRQHandler(void) {
     } else {
         cycles = start_tick - end_tick;
     }
-    MimicDevice_UpdateCpuCyclesMax_Inline(cycles);
+    MimicDevice_UpdateCpuCyclesMax_ISR(cycles);
 #endif
 }
 
 void MimicDSP_ProcessPendingTasks(void) {
-    if (mimic_device.pending_system_command != MIMIC_CMD_NOP) {
-        switch (mimic_device.pending_system_command) {
+    uint8_t cmd = MimicDevice_PopSystemCommand();
+    if (cmd != MIMIC_CMD_NOP) {
+        switch (cmd) {
             case MIMIC_CMD_NVM_COMMIT:
-                MimicFlash_WriteGainQ15Data(MimicDevice_GetRegU16(MIMIC_REG_NVM_GAIN_Q15));
-                MimicFlash_WriteOffsetData(MimicDevice_GetRegS16(MIMIC_REG_NVM_OFFSET));
+                MimicFlash_WriteGainQ15Data(MimicDevice_ReadRegU16(MIMIC_REG_NVM_GAIN_Q15));
+                MimicFlash_WriteOffsetData(MimicDevice_ReadRegS16(MIMIC_REG_NVM_OFFSET));
                 break;
             case MIMIC_CMD_NVM_RELOAD:
                 MimicDevice_LoadCalibration();
                 break;
         }
-        mimic_device.pending_system_command = MIMIC_CMD_NOP;
     }
 
     // 1. Minimum necessary background processing
-    if (mimic_device.i2c_dirty_flag) {
+    if (MimicDevice_PopUpdateFlag()) {
         HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
         cb_disable_output();
 
         MimicDSP_UpdateParameters();
-
-        MimicDevice_AcknowledgeUpdate();
+        // Reset cpu cycles count
+        MimicDevice_PopCpuCyclesMax();
         if ((pipeline.global_flags & MIMIC_FLAG_OUT_OPEN) == 0) {
             cb_enable_output();
         }
