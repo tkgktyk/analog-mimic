@@ -49,7 +49,7 @@ void setup() {
   
   // 1. Send the target register address
   Wire.beginTransmission(MIMIC_DEFAULT_I2C_ADDR);
-  Wire.write(MIMIC_REG_CPU_CYCLES_L);
+  Wire.write(MIMIC_REG_SYSTEM_ID);
   uint8_t txError = Wire.endTransmission();
   
   // Guard clause: Handle transmission error immediately

@@ -1,6 +1,6 @@
 /**
  ******************************************************************************
- * @file    Mimic.c
+ * @file    Mimic.cpp
  * @author  TAKAGI Katsuyuki
  * @brief   Implementation of Host-Side Helper Functions, I2C Command Packet 
  * Serialization, and Register-Mapping Wrapper APIs.
@@ -177,8 +177,11 @@ void MimicBase::setOutputOffset(int16_t offsetMv) {
 
 void MimicBase::writeModeAndPayload(uint8_t mode, const uint8_t *payload, uint8_t length) {
     _wire->beginTransmission(_i2c_addr);
-    _wire->write(MIMIC_REG_MODE_ID); // Specify target address 0x10
-    _wire->write(mode);                  // Write to 0x10. Subsequent bytes auto-increment to 0x11.
+    
+    // Specify the target base address
+    _wire->write(MIMIC_REG_MODE_ID); 
+    // Write the mode ID to the base address. Subsequent bytes will auto-increment.
+    _wire->write(mode);                  
     
     // Transmit the payload in a single burst (MCU is idling, so buffer overflow will not occur)
     if (length > 0 && payload != nullptr) {
@@ -517,7 +520,7 @@ void MimicBase::setMathIntegral(float timeConstantUs, int8_t inputShift) {
 
 void MimicBase::setRectifierHalf(bool polarity, uint16_t vrefMv) {
     // Half-wave rectification behaves similarly to an analog clipping circuit; delegate to setClipper
-    if (polarity == MIMIC_POLALYTY_NEGATIVE) setClipper(vrefMv, 0);
+    if (polarity == MIMIC_POLARITY_NEGATIVE) setClipper(vrefMv, 0);
     else setClipper(_vdd_mv, vrefMv);
 }
 
@@ -545,43 +548,47 @@ void MimicBase::setDigitalDelay(uint16_t delaySamples) {
     writeModeAndPayload(MIMIC_MODE_ID_DELAY, payload, 2);
 }
 
+// -------------------------------------------------------------
+// Calibration APIs
+// -------------------------------------------------------------
+
 /**
- * @brief ゲイン校正値(float)をQ15(uint16_t)に変換し、I2C経由でNVMレジスタに書き込む
- * @param gain ゲイン倍率 (例: 1.0023, 0.994)
+ * @brief Converts a floating-point gain multiplier to a Q15 unsigned integer and writes it to the NVM register.
+ * @param gain Gain multiplier (e.g., 1.0023, 0.994).
  */
 void MimicBase::setGainCal(float gain) {
-  // 1. float(倍率) を 2バイトの符号なしQ15固定小数点(0〜65535) に変換
-  // 例: 1.0倍 -> 32768, 1.01倍 -> 33096
-  uint16_t gain_q15 = (uint16_t)(gain * 32768.0f);
+    // 1. Convert float (multiplier) to a 16-bit unsigned Q15 fixed-point value (0 - 65535)
+    // Example: 1.0x -> 32768, 1.01x -> 33096
+    uint16_t gain_q15 = (uint16_t)(gain * 32768.0f);
 
-  writeTwoBytes(MIMIC_REG_NVM_GAIN_Q15, gain_q15);
+    writeTwoBytes(MIMIC_REG_NVM_GAIN_Q15, gain_q15);
 }
 
 /**
- * @brief オフセット校正値(int16_t)を、I2C経由でNVMレジスタに書き込む
- * @param offset 12bit DAC生コードスケールのオフセット誤差 (例: -3, +5)
- * @note 引数をuint16_tからint16_tに変更し、負の数を安全に扱えるようにしています。
+ * @brief Writes the raw offset calibration value to the NVM register via I2C.
+ * @param offset Offset error in 12-bit DAC raw code scale (e.g., -3, +5).
+ * @note Uses int16_t to safely handle negative offset values.
  */
 void MimicBase::setOffsetCal(int16_t offset) {
-  // 符号付き int16_t のままビット列としてキャストし、2バイトのデータとして扱う
-  // 例: -1 -> 0xFFFF, +5 -> 0x0005
-  writeTwoBytes(MIMIC_REG_NVM_OFFSET, (uint16_t)offset);
+    // Cast signed int16_t directly to uint16_t for 2-byte transmission
+    // Example: -1 -> 0xFFFF, +5 -> 0x0005
+    writeTwoBytes(MIMIC_REG_NVM_OFFSET, (uint16_t)offset);
 }
 
 /**
- * @brief 現在RAM上にある校正パラメータを、マイコン内部のFLASHメモリへ永久保存する
+ * @brief Commits the calibration parameters currently in RAM to the MCU's internal FLASH memory for permanent storage.
  */
 void MimicBase::commitCalibrationToNvm(void) {
-  // 1. NVMコントロールレジスタ（0x3F）に対して、セーブコマンド（0xA5）を発行
-  writeOneByte(MIMIC_REG_CMD_PORT, MIMIC_CMD_NVM_COMMIT);
+    // Issue the COMMIT command (0xA5) to the Command Port register
+    writeOneByte(MIMIC_REG_CMD_PORT, MIMIC_CMD_NVM_COMMIT);
 }
 
 /**
- * @brief 現在RAM上にある校正パラメータを、マイコン内部のFLASHメモリへ永久保存する
+ * @brief Discards current RAM calibration parameters and reloads the saved values from the MCU's internal FLASH memory.
  */
 void MimicBase::reloadCalibrationFromNvm(void) {
-  // 1. NVMコントロールレジスタ（0x3F）に対して、セーブコマンド（0xA5）を発行
-  writeOneByte(MIMIC_REG_CMD_PORT, MIMIC_CMD_NVM_RELOAD);
+    // Issue the RELOAD command (0x5A) to the Command Port register
+    writeOneByte(MIMIC_REG_CMD_PORT, MIMIC_CMD_NVM_RELOAD);
 }
 
 // =========================================================

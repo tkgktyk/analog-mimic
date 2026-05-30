@@ -2,7 +2,7 @@
  ******************************************************************************
  * @file    mimic_flash.h
  * @author  TAKAGI Katsuyuki
- * @brief   
+ * @brief   NVM (Non-Volatile Memory) Flash Calibration Data Storage API.
  *-----------------------------------------------------------------------------
  * Copyright (C) 2026 TAKAGI Katsuyuki
  *
@@ -30,19 +30,34 @@
 extern "C" {
 #endif
 
+// =========================================================
+// Flash Calibration Access APIs
+// =========================================================
+
+/**
+ * @brief  Writes the Q15 fractional gain calibration value to Flash memory.
+ * @param  gain_q15 The 16-bit unsigned Q15 gain multiplier to store.
+ * @return true if the Flash write operation was successful, false otherwise.
+ */
 bool MimicFlash_WriteGainQ15Data(uint16_t gain_q15);
 
+/**
+ * @brief  Reads the Q15 fractional gain calibration value from Flash memory.
+ * @return The stored 16-bit Q15 gain value. Returns a default value if uninitialized.
+ */
 uint16_t MimicFlash_ReadGainQ15Data(void);
 
 /**
- * @brief  校正値を擬似EEPROM（フラッシュの1ページ）に保存するメインAPI
- * @param  target_flash_addr: 保存先フラッシュの先頭アドレス（128バイトのアライメントが必要）
- * @param  my_cal_data: 保存したい校正値データへのポインタ
- * @param  data_size: 校正値データのサイズ（最大128バイト）
- * @retval HAL_StatusTypeDef: 手順の成否
+ * @brief  Writes the raw ADC offset calibration value to pseudo-EEPROM (Flash page).
+ * @param  offset The 16-bit signed offset value to store.
+ * @return true if the Flash write operation was successful, false otherwise.
  */
 bool MimicFlash_WriteOffsetData(int16_t offset);
 
+/**
+ * @brief  Reads the raw ADC offset calibration value from Flash memory.
+ * @return The stored 16-bit signed offset value. Returns a default value if uninitialized.
+ */
 int16_t MimicFlash_ReadOffsetData(void);
 
 #ifdef __cplusplus

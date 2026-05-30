@@ -42,38 +42,44 @@ extern "C" {
  * main execution background loop and high-frequency ISRs.
  */
 typedef struct {
-  volatile uint8_t registers[MIMIC_REG_SHADOW_SIZE]; /**< I2C protocol register memory map */
-  volatile uint8_t status;                             /**< Bitfield containing current system flags and transient errors */
-  volatile uint16_t adc_val;                           /**< Latest raw data acquired from the ADC input channel */
-  volatile uint16_t cpu_cycles_max;                    /**< Peak-hold execution cycle counter for profiling */
-  volatile bool i2c_dirty_flag;                     /**< Semaphore flag indicating a parameter update is requested */
-  volatile uint8_t pending_system_command;
+  volatile uint8_t  registers[MIMIC_REG_SHADOW_SIZE]; /**< I2C protocol register memory map */
+  volatile uint8_t  status;                           /**< Bitfield containing current system flags and transient errors */
+  volatile uint16_t adc_val;                          /**< Latest raw data acquired from the ADC input channel */
+  volatile uint16_t cpu_cycles_max;                   /**< Peak-hold execution cycle counter for profiling */
+  volatile bool     i2c_dirty_flag;                   /**< Semaphore flag indicating a parameter update is requested */
+  volatile uint8_t  pending_system_command;           /**< Command byte for deferred system operations (e.g., NVM flush) */
 } MimicDevice_t;
 
 typedef void (*MimicCallback_t)(void);
 
 void MimicDevice_Init(MimicCallback_t enable_output, MimicCallback_t disable_output);
 
-
 // =========================================================
 // Parameter Decoding Utilities (Big-Endian)
 // =========================================================
+
 /**
- * @brief Big-Endianのバイト配列から16bit整数を復元する（型安全な関数版）
- * @note  マクロの代わりとして、常にインライン展開されるように定義
+ * @brief Restores a 16-bit unsigned integer from a Big-Endian byte array (type-safe function version).
+ * @note  Defined with always_inline attribute as a zero-overhead alternative to macros.
  */
 static inline __attribute__((always_inline)) uint16_t _MimicDevice_ReadU16_BE(const volatile uint8_t *p) {
     return (uint16_t)((p[0] << 8) | p[1]);
 }
 
+/**
+ * @brief Restores a 16-bit signed integer from a Big-Endian byte array.
+ */
 static inline __attribute__((always_inline)) int16_t _MimicDevice_ReadS16_BE(const volatile uint8_t *p) {
     return (int16_t)((p[0] << 8) | p[1]);
 }
 
-// C言語の static inline は、コンパイル時に「関数呼び出し」ではなく
-// 「直接のメモリアクセス」に展開されるため、オーバーヘッドは完全にゼロ（0クロック）です。
+/* * In C, 'static inline' functions guarantee direct memory access rather than 
+ * function call overhead at compile time, resulting in zero extra clock cycles.
+ * * Note: Block-scope 'extern' is intentionally used here to strictly encapsulate 
+ * 'mimic_device' from being accessed directly by other source files.
+ */
 static inline __attribute__((always_inline)) uint8_t MimicDevice_ReadReg(uint8_t reg) {
-    extern MimicDevice_t mimic_device; // 実体への参照
+    extern MimicDevice_t mimic_device;
     return mimic_device.registers[reg];
 }
 
@@ -81,8 +87,6 @@ static inline __attribute__((always_inline)) void MimicDevice_WriteReg(uint8_t a
     extern MimicDevice_t mimic_device;
     mimic_device.registers[addr] = val;
 }
-
-
 
 // =========================================================
 // Thread-Safe Accessor APIs
@@ -118,11 +122,10 @@ static inline __attribute__((always_inline)) uint16_t MimicDevice_GetAdcVal(void
  * @note  This operation is atomic to prevent the sampling ISR from writing intermediate data.
  */
 static inline __attribute__((always_inline)) uint16_t MimicDevice_PopCpuCyclesMax(void) {
-  extern MimicDevice_t mimic_device;
-  uint16_t max_cycles = mimic_device.cpu_cycles_max;
-  mimic_device.cpu_cycles_max = 0; // Reset upon retrieval
-
-  return max_cycles;
+    extern MimicDevice_t mimic_device;
+    uint16_t max_cycles = mimic_device.cpu_cycles_max;
+    mimic_device.cpu_cycles_max = 0; // Reset upon retrieval
+    return max_cycles;
 }
 
 static inline __attribute__((always_inline)) void MimicDevice_RequestSystemCommand(uint8_t cmd) {
@@ -134,7 +137,6 @@ static inline __attribute__((always_inline)) void MimicDevice_RequestUpdate(void
     extern MimicDevice_t mimic_device;
     mimic_device.i2c_dirty_flag = true;
 }
-
 
 /**
  * @brief Applies parameters acquired via I2C to the internal DSP mathematical models.
@@ -153,16 +155,16 @@ void MimicDevice_ProcessPendingTasks(void);
  * @note   Inlined directly into the ISR to eliminate function call penalties.
  */
 static inline __attribute__((always_inline)) void MimicDevice_SetAdcVal_ISR(uint16_t raw_val) {
-    extern MimicDevice_t mimic_device; // 実体への参照
+    extern MimicDevice_t mimic_device;
     mimic_device.adc_val = raw_val;
 }
 
 /**
- * @brief  Ors the status register with the specified error flags.
+ * @brief  ORs the status register with the specified error flags.
  * @param  error_flag Transient or persistent error flag to set.
  */
 static inline __attribute__((always_inline)) void MimicDevice_SetErrorFlag_ISR(uint8_t error_flag) {
-    extern MimicDevice_t mimic_device; // 実体への参照
+    extern MimicDevice_t mimic_device;
     mimic_device.status |= error_flag;
 }
 
@@ -171,7 +173,7 @@ static inline __attribute__((always_inline)) void MimicDevice_SetErrorFlag_ISR(u
  * @param  cycles Measured CPU cycles for the current execution.
  */
 static inline __attribute__((always_inline)) void MimicDevice_UpdateCpuCyclesMax_ISR(uint32_t cycles) {
-    extern MimicDevice_t mimic_device; // 実体への参照
+    extern MimicDevice_t mimic_device;
     if (cycles > mimic_device.cpu_cycles_max) {
         mimic_device.cpu_cycles_max = (uint16_t)cycles;
     }

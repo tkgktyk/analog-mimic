@@ -172,6 +172,7 @@ void profile() {
 }
 
 void loop() {
+  mimic.setDecimation(0);
   profile();
   mimic.setDecimation(1);
   Serial.println("\n=== Second Profiling (Decimation=1) ===");

@@ -28,6 +28,10 @@
 #include "mimic_dsp.h"
 #include "mimic_i2c.h"
 
+// =========================================================
+// Configuration Macros
+// =========================================================
+
 /**
  * @brief  Executes a code block with interrupts disabled, restoring the original 
  * interrupt state (PRIMASK) upon completion.
@@ -43,68 +47,32 @@
 // =========================================================
 // Global Device State Instantiation
 // =========================================================
+
 // Defines and initializes the single, system-wide global device state structure.
 MimicDevice_t mimic_device = {
     .registers = {0},
     .status = 0x00,
-    .adc_val = 2048, // Initialized to mid-scale analog ground (Vref/2) for safety
+    .adc_val = MIMIC_ADC_MIN_VALUE,
     .cpu_cycles_max = 0,
     .i2c_dirty_flag = false,
-    .pending_system_command = MIMIC_CMD_NOP};
+    .pending_system_command = MIMIC_CMD_NOP
+};
 
+static MimicCallback_t cb_enable_output = NULL;
+static MimicCallback_t cb_disable_output = NULL;
 
-MimicCallback_t cb_enable_output = NULL;
-MimicCallback_t cb_disable_output = NULL;
+// =========================================================
+// Private Helper Functions
+// =========================================================
 
 static void LoadCalibration(void) {
-  uint16_t gain_q15 = MimicFlash_ReadGainQ15Data();
-  mimic_device.registers[MIMIC_REG_NVM_GAIN_Q15_H] = (uint8_t)(gain_q15 >> 8);
-  mimic_device.registers[MIMIC_REG_NVM_GAIN_Q15_L] = (uint8_t)(gain_q15 & 0xFF);
-  int16_t offset = MimicFlash_ReadOffsetData();
-  mimic_device.registers[MIMIC_REG_NVM_OFFSET_H] = (uint8_t)(offset >> 8);
-  mimic_device.registers[MIMIC_REG_NVM_OFFSET_L] = (uint8_t)(offset & 0xFF);
-}
-
-void MimicDevice_Init(MimicCallback_t enable_output, MimicCallback_t disable_output) { 
-  cb_enable_output = enable_output;
-  cb_disable_output = disable_output;
-
-  MimicI2C_Init();
-  MimicDSP_Init();
-
-  LoadCalibration();
-}
-
-// =========================================================
-// Thread-Safe State Management APIs
-// =========================================================
-
-/**
- * @brief Thread-safe setter for status flags.
- * Prevents data races when multiple interrupts try to update the status
- * register simultaneously.
- */
-void MimicDevice_SetStatusFlag(uint8_t flag) {
-  CRITICAL_SECTION_BLOCK(
-    mimic_device.status |= flag;
-  );
-}
-
-
-/**
- * @brief Retrieves the status and clears transient error flags atomically.
- * Called primarily when the I2C master reads the STATUS register.
- */
-uint8_t MimicDevice_GetAndClearStatusFlag(void) {
-  uint8_t current_status;
-  
-  CRITICAL_SECTION_BLOCK(
-    current_status = mimic_device.status;
-    // Retain active state flags (e.g., SYS_READY) but clear transient errors
-    mimic_device.status &= MIMIC_STATUS_STATE_MASK;
-  );  
-
-  return current_status;
+    uint16_t gain_q15 = MimicFlash_ReadGainQ15Data();
+    mimic_device.registers[MIMIC_REG_NVM_GAIN_Q15_H] = (uint8_t)(gain_q15 >> 8);
+    mimic_device.registers[MIMIC_REG_NVM_GAIN_Q15_L] = (uint8_t)(gain_q15 & 0xFF);
+    
+    int16_t offset = MimicFlash_ReadOffsetData();
+    mimic_device.registers[MIMIC_REG_NVM_OFFSET_H] = (uint8_t)(offset >> 8);
+    mimic_device.registers[MIMIC_REG_NVM_OFFSET_L] = (uint8_t)(offset & 0xFF);
 }
 
 static inline __attribute__((always_inline)) uint16_t ReadRegU16(uint8_t addr) {
@@ -115,48 +83,108 @@ static inline __attribute__((always_inline)) int16_t ReadRegS16(uint8_t addr) {
     return _MimicDevice_ReadU16_BE(&mimic_device.registers[addr]);
 }
 
-void MimicDevice_ProcessPendingTasks(void) {
-    uint8_t cmd = MIMIC_CMD_NOP;
-    CRITICAL_SECTION_BLOCK( 
-      cmd = mimic_device.pending_system_command;
-      mimic_device.pending_system_command = MIMIC_CMD_NOP;
-    );
-    if (cmd != MIMIC_CMD_NOP) {
-        HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
-        switch (cmd) {
-            case MIMIC_CMD_NVM_COMMIT:
-                MimicFlash_WriteGainQ15Data(ReadRegU16(MIMIC_REG_NVM_GAIN_Q15));
-                MimicFlash_WriteOffsetData(ReadRegS16(MIMIC_REG_NVM_OFFSET));
-                break;
-            case MIMIC_CMD_NVM_RELOAD:
-                LoadCalibration();
-                break;
-        }
-        HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
+static void ExecuteSystemCommand(uint8_t cmd) {
+    HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
+    
+    switch (cmd) {
+        case MIMIC_CMD_NVM_COMMIT:
+            MimicFlash_WriteGainQ15Data(ReadRegU16(MIMIC_REG_NVM_GAIN_Q15));
+            MimicFlash_WriteOffsetData(ReadRegS16(MIMIC_REG_NVM_OFFSET));
+            break;
+        case MIMIC_CMD_NVM_RELOAD:
+            LoadCalibration();
+            break;
+        default:
+            break;
     }
+    
+    HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
+}
 
-    bool flag = mimic_device.i2c_dirty_flag;
-    mimic_device.i2c_dirty_flag = false;
-    if (flag) {
-        HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
-        cb_disable_output();
+static void UpdateDSPConfiguration(void) {
+    HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
+    cb_disable_output();
 
-        MimicDSP_Config_t config;
-        config.mode_id          = MimicDevice_ReadReg(MIMIC_REG_MODE_ID);
-        config.global_flags     = MimicDevice_ReadReg(MIMIC_REG_GLOBAL_FLAGS);
-        config.decimation_n     = MimicDevice_ReadReg(MIMIC_REG_GLOBAL_DECIMATION_N);
-        config.gain_q15   = (int32_t)ReadRegU16(MIMIC_REG_NVM_GAIN_Q15);
-        config.offset_raw = ReadRegS16(MIMIC_REG_GLOBAL_OFFSET) + ReadRegS16(MIMIC_REG_NVM_OFFSET);
-        memcpy(config.payload, 
+    MimicDSP_Config_t config;
+    config.mode_id      = MimicDevice_ReadReg(MIMIC_REG_MODE_ID);
+    config.global_flags = MimicDevice_ReadReg(MIMIC_REG_GLOBAL_FLAGS);
+    config.decimation_n = MimicDevice_ReadReg(MIMIC_REG_GLOBAL_DECIMATION_N);
+    config.gain_q15     = (int32_t)ReadRegU16(MIMIC_REG_NVM_GAIN_Q15);
+    config.offset_raw   = ReadRegS16(MIMIC_REG_GLOBAL_OFFSET) + ReadRegS16(MIMIC_REG_NVM_OFFSET);
+    
+    memcpy(config.payload, 
            (const void *)&mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START], 
            MIMIC_DSP_PAYLOAD_SIZE);
 
-        MimicDSP_UpdateParameters(&config);
-        // Reset cpu cycles count
-        MimicDevice_PopCpuCyclesMax();
-        if ((config.global_flags & MIMIC_FLAG_OUT_OPEN) == 0) {
-            cb_enable_output();
-        }
-        HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
+    MimicDSP_UpdateParameters(&config);
+    
+    // Reset cpu cycles count upon applying new configuration
+    MimicDevice_PopCpuCyclesMax();
+    
+    if ((config.global_flags & MIMIC_FLAG_OUT_OPEN) == 0) {
+        cb_enable_output();
+    }
+    
+    HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
+}
+
+// =========================================================
+// Public Initialization and Management APIs
+// =========================================================
+
+void MimicDevice_Init(MimicCallback_t enable_output, MimicCallback_t disable_output) { 
+    cb_enable_output = enable_output;
+    cb_disable_output = disable_output;
+
+    MimicI2C_Init();
+    MimicDSP_Init();
+
+    LoadCalibration();
+}
+
+/**
+ * @brief Thread-safe setter for status flags.
+ * Prevents data races when multiple interrupts try to update the status
+ * register simultaneously.
+ */
+void MimicDevice_SetStatusFlag(uint8_t flag) {
+    CRITICAL_SECTION_BLOCK(
+        mimic_device.status |= flag;
+    );
+}
+
+/**
+ * @brief Retrieves the status and clears transient error flags atomically.
+ * Called primarily when the I2C master reads the STATUS register.
+ */
+uint8_t MimicDevice_GetAndClearStatusFlag(void) {
+    uint8_t current_status;
+    
+    CRITICAL_SECTION_BLOCK(
+        current_status = mimic_device.status;
+        // Retain active state flags (e.g., SYS_READY) but clear transient errors
+        mimic_device.status &= MIMIC_STATUS_STATE_MASK;
+    );  
+
+    return current_status;
+}
+
+void MimicDevice_ProcessPendingTasks(void) {
+    uint8_t cmd = MIMIC_CMD_NOP;
+    
+    CRITICAL_SECTION_BLOCK( 
+        cmd = mimic_device.pending_system_command;
+        mimic_device.pending_system_command = MIMIC_CMD_NOP;
+    );
+    
+    if (cmd != MIMIC_CMD_NOP) {
+        ExecuteSystemCommand(cmd);
+    }
+
+    bool is_i2c_dirty = mimic_device.i2c_dirty_flag;
+    mimic_device.i2c_dirty_flag = false;
+    
+    if (is_i2c_dirty) {
+        UpdateDSPConfiguration();
     }
 }

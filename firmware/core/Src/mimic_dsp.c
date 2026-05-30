@@ -27,18 +27,19 @@
 #include <string.h>
 
 // =========================================================
-// Q15 Format Configurations
+// Fixed-Point Arithmetic Configurations
 // =========================================================
-#define Q15_SHIFT 4            // For 12-bit ADC (12 + 4 = 16 bits)
+#define Q15_SHIFT           4  // For 12-bit ADC (12 + 4 = 16 bits)
 #define FRACTIONAL_BITS_Q15 15 // Q15 fractional bits for 32-bit shifting
+#define Q16_SHIFT           16 // Q16 fractional bits for decimation math
 
 // =========================================================
-// DSP Specific Constants & Magic Number Elimination
+// DSP Specific Constants
 // =========================================================
-#define LUT_INDEX_SHIFT   6
-#define LUT_FRAC_MASK     0x3F
-#define BIQUAD_ROUND_VAL  8192
-#define BIQUAD_SHIFT      14
+#define LUT_INDEX_SHIFT     6
+#define LUT_FRAC_MASK       0x3F
+#define BIQUAD_ROUND_VAL    8192
+#define BIQUAD_SHIFT        14
 
 // =========================================================
 // Look-Up Tables (LUT)
@@ -50,7 +51,8 @@ static const int32_t lut_log[65] = {
     8700, 9000, 9200, 9500, 9700, 9900, 10100, 10300, 10500, 10700,
     10900, 11100, 11300, 11500, 11600, 11800, 12000, 12100, 12300, 12400,
     12600, 12700, 12900, 13000, 13100, 13300, 13400, 13500, 13600, 13800,
-    13900, 14000, 14100, 14200, 14300};
+    13900, 14000, 14100, 14200, 14300
+};
 
 static const int32_t lut_antilog[65] = {
     -32768, -31768, -30000, -27000, -23000, -18000, -12000, -5000, 2000, 8000,
@@ -59,18 +61,20 @@ static const int32_t lut_antilog[65] = {
     32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767,
     32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767,
     32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767,
-    32767, 32767, 32767, 32767, 32767};
+    32767, 32767, 32767, 32767, 32767
+};
 
 // =========================================================
 // 1. DSP Internal State Variables (Promoted to 32-bit)
 // =========================================================
+
 // Pipeline context structure.
 // Placing 32-bit variables at the top to eliminate alignment padding gaps.
 typedef struct {
-    int32_t  out_mult_q15;          // Signed Q15 multiplier
-    int32_t  out_offset_calc;   // Final computed offset including inversion
-    uint8_t  current_mode;
-    uint8_t  global_flags;
+    int32_t out_mult_q15;     // Signed Q15 multiplier
+    int32_t out_offset_calc;  // Final computed offset including inversion
+    uint8_t current_mode;
+    uint8_t global_flags;
     // 2 bytes of implicit padding will be automatically inserted here by the compiler
 } MimicPipeline_t;
 
@@ -92,29 +96,29 @@ const int32_t *active_lut_ptr = lut_log;
 
 // --- 1st Order Filter (LPF/HPF) ---
 typedef struct {
-    int32_t alpha_q15;  // Config
-    int32_t accum;      // State
+    int32_t alpha_q15;       // Config
+    int32_t accum;           // State
 } Filter1st_t;
 
 // --- Biquad Filter (DF2T) ---
 typedef struct {
-    int32_t b0, b1, b2; // Config
-    int32_t a1, a2;     // Config
-    int32_t s1, s2;     // State
+    int32_t b0, b1, b2;      // Config
+    int32_t a1, a2;          // Config
+    int32_t s1, s2;          // State
 } Biquad_t;
 
 // --- Programmable Gain Amplifier (PGA) ---
 typedef struct {
-    int32_t gain_fract_q15; // Config
-    int32_t gain_shift;     // Config
-    int32_t offset_q15;     // Config
+    int32_t gain_fract_q15;  // Config
+    int32_t gain_shift;      // Config
+    int32_t offset_q15;      // Config
 } Pga_t;
 
 // --- Window / Schmitt Comparators ---
 typedef struct {
-    int32_t upper;          // Config
-    int32_t lower;          // Config
-    int32_t wave_last_raw;  // State
+    int32_t upper;           // Config
+    int32_t lower;           // Config
+    int32_t wave_last_raw;   // State
 } Comparator_t;
 
 // --- Math (Derivative / Integral) / Slew Rate Limiter ---
@@ -126,20 +130,20 @@ typedef struct {
 
 // --- Clipper ---
 typedef struct {
-    int32_t upper;      // Config
-    int32_t lower;      // Config
+    int32_t upper;           // Config
+    int32_t lower;           // Config
 } Clipper_t;
 
 // --- Envelope Follower ---
 typedef struct {
-    int32_t decay_q15;  // Config
-    uint8_t polarity;   // Config
-    int32_t last_q15;   // State
+    int32_t decay_q15;       // Config
+    uint8_t polarity;        // Config
+    int32_t last_q15;        // State
 } Envelope_t;
 
 // --- Full Wave Rectifier ---
 typedef struct {
-    int32_t vref_raw;   // Config
+    int32_t vref_raw;        // Config
 } Rectifier_t;
 
 // --- Sample and Hold ---
@@ -177,7 +181,7 @@ typedef union {
 static DSPContext_u dsp_ctx;
 
 // =========================================================================
-// Static State Variables (すべてネイティブ32bit型に変更して最速化)
+// Static State Variables (Promoted to native 32-bit for maximum speed)
 // =========================================================================
 // mask = 2^N-1, shift = N
 // mask = 0, shift = 0 : Native 192kHz mode (Decimation OFF)
@@ -187,12 +191,12 @@ static uint32_t decimation_shift = 0;
 static uint32_t adc_accumulator = 0;
 static uint32_t decimation_count = 0;
 
-// DSPの結果を扱う変数も、最初から符号付き32bit (int32_t) にしておく
-// これにより引き算やシフト演算時のキャストが一切不要になる
+// DSP result variables are also kept as signed 32-bit (int32_t) from the start 
+// to eliminate casting overhead during subtraction and bit-shifting.
 static int32_t  y_old = MIMIC_ADC_MID_VALUE;
 static int32_t  y_new = MIMIC_ADC_MID_VALUE;
 static int32_t  delta_step_q16 = 0;
-static int32_t  current_dac_val_q16 = (MIMIC_ADC_MID_VALUE << 16);
+static int32_t  current_dac_val_q16 = (MIMIC_ADC_MID_VALUE << Q16_SHIFT);
 
 // =========================================================
 // Utilities & I2C Parameter Parsers (32-bit Safe)
@@ -298,7 +302,7 @@ static inline __attribute__((always_inline)) int32_t ProcessEnvelopeFollower(int
     Envelope_t *p = (Envelope_t *)&dsp_ctx.envelope;
 
     int32_t in_q15 = RawToQ15(adc_val);
-    if (p->polarity == MIMIC_POLALYTY_NEGATIVE) in_q15 = -in_q15;
+    if (p->polarity == MIMIC_POLARITY_NEGATIVE) in_q15 = -in_q15;
     if (in_q15 < 0) in_q15 = 0;
 
     if (in_q15 > p->last_q15) {
@@ -343,10 +347,10 @@ static inline __attribute__((always_inline)) int32_t ProcessMathDerivative(int32
     int32_t diff = in_q15 - p->last_q15;
     p->last_q15 = in_q15;
 
-    // 1. 差分に対するスケール適用 (仮数部の乗算)
+    // 1. Apply scale to difference (mantissa multiplication)
     int32_t diff_mult = (diff * p->scale_fract_q15) >> FRACTIONAL_BITS_Q15;
     
-    // 2. 最終ゲインの適用 (指数部のシフト)
+    // 2. Apply final gain (exponent shift)
     int32_t s = p->scale_shift;
     int32_t out_q15 = (s >= 0) ? (diff_mult << s) : (diff_mult >> -s);
     
@@ -358,16 +362,16 @@ static inline __attribute__((always_inline)) int32_t ProcessMathIntegral(int32_t
 
     int32_t in_q15 = RawToQ15(adc_val);
 
-    // 1. 履歴の減衰 (仮数部の乗算)
+    // 1. Attenuate history (mantissa multiplication)
     int32_t history_leaked = (p->last_q15 * p->scale_fract_q15) >> FRACTIONAL_BITS_Q15;
 
-    // 2. 入力スケーリング (指数部のシフト)
-    // 三項演算子を使うことで、コンパイラが「if文」ではなく
-    // パイプラインフラッシュの起きにくい「条件付き実行命令」に最適化しやすくなります
+    // 2. Input scaling (exponent shift)
+    // Using a ternary operator helps the compiler optimize to conditional 
+    // execution instructions rather than pipeline-flushing branches.
     int32_t s = p->scale_shift;
     int32_t input_scaled = (s >= 0) ? (in_q15 << s) : (in_q15 >> -s);
 
-    // 3. 累積と出力
+    // 3. Accumulate and output
     p->last_q15 = history_leaked + input_scaled;
     return Q15ToRaw(p->last_q15);
 }
@@ -379,7 +383,7 @@ static inline __attribute__((always_inline)) int32_t ProcessSlewRateLimiter(int3
     int32_t diff = in_q15 - p->last_q15;
 
     // Mathematical clamping to suppress standard runtime branch penalties.
-    // Limits the rate of change (diff) strictly within the bounds of the threshold (p->scale_fract_q15).
+    // Limits the rate of change (diff) strictly within the bounds of the threshold.
     int32_t clamped_diff = diff;
     if (clamped_diff > p->scale_fract_q15)  clamped_diff = p->scale_fract_q15;
     if (clamped_diff < -p->scale_fract_q15) clamped_diff = -p->scale_fract_q15;
@@ -429,7 +433,7 @@ static inline __attribute__((always_inline)) int32_t ProcessDelay(int32_t adc_va
 void MimicDSP_Init(void) {
     pipeline.current_mode = MIMIC_MODE_ID_BYPASS_DSP;
     pipeline.global_flags = 0;
-    pipeline.out_mult_q15 = 1 << 15;
+    pipeline.out_mult_q15 = 1 << FRACTIONAL_BITS_Q15;
     pipeline.out_offset_calc = 0;
 
     memset((void*)&dsp_ctx, 0, sizeof(dsp_ctx));
@@ -486,9 +490,9 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
             break;
 
         case MIMIC_MODE_ID_PGA:
-            dsp_ctx.pga.gain_fract_q15 = ParseS16(p + 0);
-            dsp_ctx.pga.gain_shift = (int8_t)*(p + 2);
-            dsp_ctx.pga.offset_q15 = RawToQ15(ParseS16(p + 3));
+            dsp_ctx.pga.gain_fract_q15  = ParseS16(p + 0);
+            dsp_ctx.pga.gain_shift      = (int8_t)*(p + 2);
+            dsp_ctx.pga.offset_q15      = RawToQ15(ParseS16(p + 3));
             break;
 
         case MIMIC_MODE_ID_COMPARATOR_WIN:
@@ -500,7 +504,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
         case MIMIC_MODE_ID_MATH_DERIVATIVE:
         case MIMIC_MODE_ID_MATH_INTEGRAL:
             dsp_ctx.math.scale_fract_q15 = ParseS16(p + 0);
-            dsp_ctx.math.scale_shift = (int8_t)*(p + 2);
+            dsp_ctx.math.scale_shift     = (int8_t)*(p + 2);
             break;
 
         case MIMIC_MODE_ID_SLEW_RATE_LIMITER:
@@ -516,14 +520,14 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
         case MIMIC_MODE_ID_NONLINEAR_LUT:
             nonlinear_lut_type = (int8_t)*(p + 0);
             switch (nonlinear_lut_type) {
-                case MIMIC_LUT_LOG: active_lut_ptr = lut_log; break;
+                case MIMIC_LUT_LOG:     active_lut_ptr = lut_log; break;
                 case MIMIC_LUT_ANTILOG: active_lut_ptr = lut_antilog; break;
             }
             break;
 
         case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:
             dsp_ctx.envelope.decay_q15 = ParseS16(p + 0);
-            dsp_ctx.envelope.polarity = (int8_t)*(p + 2);
+            dsp_ctx.envelope.polarity  = (int8_t)*(p + 2);
             break;
 
         case MIMIC_MODE_ID_RECTIFIER_FULL:
@@ -532,13 +536,15 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
 
         case MIMIC_MODE_ID_SAMPLE_AND_HOLD:
             dsp_ctx.sh.period_samples = ParseU16(p + 0);
-            dsp_ctx.sh.track_samples = ParseU16(p + 2);
+            dsp_ctx.sh.track_samples  = ParseU16(p + 2);
             break;
 
         case MIMIC_MODE_ID_DELAY:
             dsp_ctx.delay.delay_samples = ParseU16(p + 0);
-            if (dsp_ctx.delay.delay_samples > DELAY_BUFFER_MASK)
+            if (dsp_ctx.delay.delay_samples > DELAY_BUFFER_MASK) {
                 dsp_ctx.delay.delay_samples = DELAY_BUFFER_MASK;
+            }
+            break;
     }
 }
 
@@ -576,7 +582,7 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample_RAM
     }
 
     // 3. Post-Processing: Branchless inversion and dynamic DC Offset insertion
-    int32_t final_out = ((dsp_out * pipe->out_mult_q15) >> 15) + pipe->out_offset_calc;
+    int32_t final_out = ((dsp_out * pipe->out_mult_q15) >> FRACTIONAL_BITS_Q15) + pipe->out_offset_calc;
 
     // 4. Branchless fixed-point saturation logic (Clips dynamically to 0 - 4095)
     if ((uint32_t)final_out > MIMIC_ADC_MAX_VALUE) {
@@ -586,18 +592,18 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample_RAM
     return (uint16_t)final_out;
 }
 
-void MimicDSP_SetDecimation(uint8_t N) {
-    decimation_mask = (1U << N) - 1;
-    decimation_shift = N;
+void MimicDSP_SetDecimation(uint8_t decimation_n) {
+    decimation_mask = (1U << decimation_n) - 1;
+    decimation_shift = decimation_n;
 
-    // 2. DSPの内部状態（バッファとスロープ）を完全に安全にリセット
+    // Safely reset internal DSP states (buffers and slopes)
     adc_accumulator = 0;
     decimation_count = 0;
     
     y_old = MIMIC_ADC_MID_VALUE;
     y_new = MIMIC_ADC_MID_VALUE;
     delta_step_q16 = 0;
-    current_dac_val_q16 = (MIMIC_ADC_MID_VALUE << 16);
+    current_dac_val_q16 = (MIMIC_ADC_MID_VALUE << Q16_SHIFT);
 }
 
 // Configuration for Test and Debug Features
@@ -643,29 +649,29 @@ void ADC_COMP_IRQHandler(void) {
         DAC1->DHR12R1 = MimicDSP_ProcessSample_RAM(raw_val);
     } else {
         // [DECIMATION & INTERPOLATION PATH]
-        // 32bitネイティブ演算 (キャスト不要、最速)
+        // 32-bit native calculation (no casting required, maximum speed)
         adc_accumulator += raw_val;
         decimation_count++;
 
         current_dac_val_q16 += delta_step_q16;
-        DAC1->DHR12R1 = current_dac_val_q16 >> 16; 
+        DAC1->DHR12R1 = current_dac_val_q16 >> Q16_SHIFT; 
 
         if ((decimation_count & decimation_mask) == 0) {
             
-            // シフト結果も32bitで保持
+            // Keep shifted result as 32-bit
             uint32_t x_in = adc_accumulator >> decimation_shift;
             MimicDevice_SetAdcVal_ISR(x_in); 
 
             y_old = y_new;
             y_new = MimicDSP_ProcessSample_RAM(x_in);
 
-            // 【超絶最適化ポイント】
-            // 互いにint32_tなのでキャストは一切不要！
-            // C言語のコンパイラは純粋な「SUB」命令と「LSL」命令だけを吐き出す
-            int32_t diff_q16 = (y_new - y_old) << 16;
+            // [Micro-Optimization]
+            // Since both operands are int32_t, absolutely no casting is required.
+            // The C compiler will emit pure 'SUB' and 'LSL' instructions.
+            int32_t diff_q16 = (y_new - y_old) << Q16_SHIFT;
             delta_step_q16 = diff_q16 >> decimation_shift;
 
-            current_dac_val_q16 = y_old << 16;
+            current_dac_val_q16 = y_old << Q16_SHIFT;
             
             adc_accumulator = 0;
         }

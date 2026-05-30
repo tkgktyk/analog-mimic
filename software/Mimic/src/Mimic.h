@@ -22,15 +22,15 @@
 #include "mimic_registers.h"
 
 // Constants for Power Supply Voltage Selection
-#define MIMIC_VDD_3V3 3300
-#define MIMIC_VDD_5V 5000
+constexpr uint16_t MIMIC_VDD_3V3 = 3300;
+constexpr uint16_t MIMIC_VDD_5V  = 5000;
 
 // =========================================================
 // Filter Constants (Q-Factors)
 // =========================================================
-#define MIMIC_FILTER_Q_BUTTERWORTH 0.7071f
-#define MIMIC_FILTER_Q_BESSEL 0.5773f
-#define MIMIC_FILTER_Q_CHEBYSHEV 1.0f
+constexpr float MIMIC_FILTER_Q_BUTTERWORTH = 0.7071f;
+constexpr float MIMIC_FILTER_Q_BESSEL      = 0.5773f;
+constexpr float MIMIC_FILTER_Q_CHEBYSHEV   = 1.0f;
 
 // =========================================================
 // MimicBase (Core interface for all variants)
@@ -44,6 +44,8 @@
 class MimicBase
 {
 public:
+  virtual ~MimicBase() = default;
+
   /**
    * @brief Initializes the Mimic module and synchronizes initial states.
    * @param wire Pointer to the TwoWire (I2C) instance. Defaults to &Wire.
@@ -204,15 +206,15 @@ public:
   /**
    * @brief Configures an Envelope Follower (AM detector).
    * @param decayTimeUs Release/decay time constant in microseconds.
-   * @param polarity MIMIC_POLALYTY_POSITIVE (peak) or MIMIC_POLALYTY_NEGATIVE (trough).
+   * @param polarity MIMIC_POLARITY_POSITIVE (peak) or MIMIC_POLARITY_NEGATIVE (trough).
    */
-  void setEnvelopeFollower(float decayTimeUs, uint8_t polarity = MIMIC_POLALYTY_POSITIVE);
+  void setEnvelopeFollower(float decayTimeUs, uint8_t polarity = MIMIC_POLARITY_POSITIVE);
 
   /**
    * @brief Configures a Peak Hold circuit (Envelope follower with infinite decay).
-   * @param polarity MIMIC_POLALYTY_POSITIVE (max hold) or MIMIC_POLALYTY_NEGATIVE (min hold).
+   * @param polarity MIMIC_POLARITY_POSITIVE (max hold) or MIMIC_POLARITY_NEGATIVE (min hold).
    */
-  void setPeakHold(uint8_t polarity = MIMIC_POLALYTY_POSITIVE);
+  void setPeakHold(uint8_t polarity = MIMIC_POLARITY_POSITIVE);
 
   /**
    * @brief Configures a Sample and Hold (S&H) circuit.
@@ -256,7 +258,7 @@ public:
    * @param polarity Positive or Negative half-wave to pass.
    * @param vrefMv Reference center voltage in mV.
    */
-  void setRectifierHalf(bool polarity = MIMIC_POLALYTY_POSITIVE, uint16_t vrefMv = MIMIC_ADC_MID_VALUE);
+  void setRectifierHalf(bool polarity = MIMIC_POLARITY_POSITIVE, uint16_t vrefMv = MIMIC_ADC_MID_VALUE);
 
   /**
    * @brief Configures a Full-Wave Rectifier (Absolute value circuit).
@@ -281,9 +283,9 @@ public:
 
   void setOffsetCal(int16_t offset);
 
-  void commitCalibrationToNvm(void);
+  void commitCalibrationToNvm();
 
-  void reloadCalibrationFromNvm(void);
+  void reloadCalibrationFromNvm();
 
 protected:
   MimicBase(uint16_t vddMv, uint8_t hardwareJumper = 0);
@@ -296,7 +298,6 @@ protected:
 
   // State retention variables
   uint8_t _global_flags;
-  uint16_t _delay_samples;
   int16_t _shift_raw;
   uint8_t _decimation_N;
 

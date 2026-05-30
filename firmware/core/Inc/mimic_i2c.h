@@ -21,8 +21,8 @@
  ******************************************************************************
  */
 
-#ifndef MIMIC_I2C_REQ_H
-#define MIMIC_I2C_REQ_H
+#ifndef MIMIC_I2C_H
+#define MIMIC_I2C_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -32,7 +32,7 @@ extern "C" {
 #endif
 
 // =========================================================
-// Shared Function Prototypes
+// Public API Implementations
 // =========================================================
 
 /**
@@ -40,15 +40,8 @@ extern "C" {
  */
 void MimicI2C_Init(void);
 
-/**
- * @brief  Fast Low-Layer I2C1 Interrupt Service Routine block.
- * @note   Bypasses standard HAL callback overhead to process I2C events 
- * and errors deterministically.
- */
-void MimicI2C_IRQHandler_LL(void);
-
 #ifdef __cplusplus
 }
 #endif
 
-#endif // MIMIC_I2C_REQ_H
+#endif // MIMIC_I2C_H
