@@ -54,11 +54,3 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
-
-# Arduino
-/software/*.zip
-
-# PlatformIO (Safety Net)
-.pio/
-.pioenvs/
-/software/**/.gitignore
