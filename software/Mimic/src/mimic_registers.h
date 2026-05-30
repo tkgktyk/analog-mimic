@@ -1,1 +1,0 @@
-..//..//..//firmware//core//Inc//mimic_registers.h
