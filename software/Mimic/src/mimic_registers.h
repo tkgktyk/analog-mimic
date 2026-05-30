@@ -1,1 +1,0 @@
-C:/Users/takagi/Desktop/git/analog-mimic/firmware/core/Inc/mimic_registers.h
