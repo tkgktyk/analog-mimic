@@ -94,6 +94,13 @@
   #define ADC_IN9_PORT      GPIOB
   #define DAC1_OUT_PIN      GPIO_PIN_4    // PA4
   #define DAC_PORT          GPIOA
+
+  // LED
+  #define READY_LED_PORT    GPIOF
+  #define READY_LED_PIN     GPIO_PIN_6
+  // Test pad
+  #define TEST_PAD_PORT     GPIOA
+  #define TEST_PAD_PIN      GPIO_PIN_2
 #else
   #error "Hardware revision macro is not defined! Please define HW_REV_MIMIC00 in your build configuration."
 #endif
@@ -204,7 +211,7 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef *htim_base)
  * Note: Since I2C1 uses the LL driver, this function is NOT called 
  * automatically by HAL and must be invoked manually in main.c.
  */
-void I2C1_Hardware_Init(void)
+void Mimic_I2C1_Hardware_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
@@ -227,4 +234,51 @@ void I2C1_Hardware_Init(void)
   /* 4. Force reset the I2C1 module to clear any hanging states */
   __HAL_RCC_I2C1_FORCE_RESET();
   __HAL_RCC_I2C1_RELEASE_RESET();
+}
+
+/**
+ * @brief  Initializes generic GPIO pins (e.g., Status LED, Test Pads) 
+ * that are not bound to specific analog/digital peripherals.
+ */
+void Mimic_GPIO_Hardware_Init(void)
+{
+#if defined(TARGET_MIMIC01)
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /* Enable clocks for GPIOA and GPIOF */
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOF_CLK_ENABLE();
+
+  /* 1. Ready LED (PF6) Configuration */
+  /* Ensure LED is initially OFF to prevent glitches */
+  HAL_GPIO_WritePin(READY_LED_PORT, READY_LED_PIN, GPIO_PIN_RESET);
+  
+  GPIO_InitStruct.Pin   = READY_LED_PIN;
+  GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull  = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(READY_LED_PORT, &GPIO_InitStruct);
+
+  /* 2. Test Pad (PA2) Configuration */
+  /* Set to Analog mode (high-Z) to minimize noise and power consumption */
+  GPIO_InitStruct.Pin  = TEST_PAD_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(TEST_PAD_PORT, &GPIO_InitStruct);
+#endif
+}
+
+/**
+ * @brief  Sets the state of the System Ready LED.
+ * @param  is_on: true to turn on the LED, false to turn it off.
+ */
+void Mimic_SetReadyLED(bool is_on)
+{
+#if defined(TARGET_MIMIC01)
+  if (is_on) {
+    HAL_GPIO_WritePin(READY_LED_PORT, READY_LED_PIN, GPIO_PIN_SET);
+  } else {
+    HAL_GPIO_WritePin(READY_LED_PORT, READY_LED_PIN, GPIO_PIN_RESET);
+  }
+#endif
 }

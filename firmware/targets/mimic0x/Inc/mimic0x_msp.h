@@ -31,7 +31,13 @@
 #ifndef MIMIC0X_MSP_H
 #define MIMIC0X_MSP_H
 
-/* Function Prototypes */
-void I2C1_Hardware_Init(void);
+#include <stdbool.h>
+
+/* Hardware initialization for LL drivers and generic GPIOs */
+void Mimic_I2C1_Hardware_Init(void);
+void Mimic_GPIO_Hardware_Init(void);
+
+/* Hardware specific control abstractions */
+void Mimic_SetReadyLED(bool is_on);
 
 #endif /* MIMIC0X_MSP_H */

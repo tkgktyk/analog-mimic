@@ -118,6 +118,7 @@ int main(void) {
 
   // Initialization completed
   MimicDevice_SetStatusFlag(MIMIC_STATUS_SYSTEM_READY);
+  Mimic_SetReadyLED(true);
 
   // Main background loop
   while (1) {
@@ -195,7 +196,7 @@ static void SystemClock_Config(void) {
 
 static void MX_I2C1_Init(void) {
   // 1. Initialize hardware resources (Pins, Clocks, NVIC)
-  I2C1_Hardware_Init();
+  Mimic_I2C1_Hardware_Init();
 
   // 2. I2C LL initialization (Logical parameters)
   LL_I2C_InitTypeDef I2C_InitStruct = {0};
@@ -326,9 +327,7 @@ static void MX_TIM3_Init(void) {
 }
 
 static void MX_GPIO_Init(void) {
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOF_CLK_ENABLE();
+  Mimic_GPIO_Hardware_Init();
 }
 
 /**
