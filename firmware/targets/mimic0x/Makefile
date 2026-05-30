@@ -1,27 +1,27 @@
 # Analog Mimic - mimic0x Firmware Makefile
 
 # ==============================================================================
-# 1. ハードウェアIDの定義 (ここを変更するだけで全てが連動します)
+# 1. Hardware ID Definition (Modify this to update all related targets)
 # ==============================================================================
-# 2桁の16進数文字列 (00, 01, 0A, 10 等)
+# 2-digit hexadecimal string (e.g., 00, 01, 0A, 10)
 HW_ID ?= 01
 
 # ==============================================================================
-# 2. ビルドターゲット（出力ファイル名）の生成
+# 2. Build Target Generation
 # ==============================================================================
-# ボード名: "MIMIC" + "01" -> MIMIC01
+# Board name: "Mimic" + "01" -> Mimic01
 BOARD_NAME = MIMIC$(HW_ID)
 
-# 出力ファイル名: analog_mimic_MIMIC01 (.elf, .hex などに使用)
+# Output filename prefix: analog_mimic_MIMIC01 (Used for .elf, .hex, etc.)
 TARGET = analog_mimic_$(BOARD_NAME)
 
 # ==============================================================================
-# 3. C言語（ファームウェア）へ引き渡すマクロ値の生成
+# 3. Preprocessor Macro Values for Firmware
 # ==============================================================================
-# ハードウェアバージョン (16進数): "0x" + "01" -> 0x01
+# Hardware version (Hexadecimal): "0x" + "01" -> 0x01
 HW_VERSION_HEX = 0x$(HW_ID)
 
-# ファームウェアバージョン (10進数): Gitのコミット回数を0-255に丸める
+# Firmware version (Decimal): Commit count modulo 256
 FW_VERSION_DEC = $(shell expr `git rev-list --count HEAD` % 256)
 
 # ========================================================
@@ -43,20 +43,20 @@ CP = $(PREFIX)objcopy
 SZ = $(PREFIX)size
 
 # Build directory
-BUILD_DIR = build/$(HW_REV)
+BUILD_DIR = build/$(BOARD_NAME)
 
 # ========================================================
 # Library and Framework Paths (Adjust to your environment)
 # ========================================================
 CORE_DIR       = ../../core
-ARDUINO_DIR       = ../../../software/Mimic
+ARDUINO_DIR    = ../../../../analog-mimic-arduino
 HAL_DRIVER_DIR = ../../lib/PY32F071_Firmware/Drivers/PY32F071_HAL_Driver
 CMSIS_DIR      = ../../lib/PY32F071_Firmware/Drivers/CMSIS
 
 # ========================================================
 # Source Files
 # ========================================================
-C_SOURCES =  \
+C_SOURCES = \
 ./Src/main.c \
 ./Src/mimic0x_hal_msp.c \
 ./Src/py32f071_it.c \
@@ -81,16 +81,15 @@ $(HAL_DRIVER_DIR)/Src/py32f071_hal_tim_ex.c \
 $(HAL_DRIVER_DIR)/Src/py32f071_hal_flash.c
 
 # Startup routine
-ASM_SOURCES =  \
+ASM_SOURCES = \
 startup_py32f071xx.s
 
 # ========================================================
 # Include Paths
 # ========================================================
-C_INCLUDES =  \
+C_INCLUDES = \
 -I./Inc \
 -I$(CORE_DIR)/Inc \
--I$(ARDUINO_DIR)/src \
 -I$(HAL_DRIVER_DIR)/Inc \
 -I$(CMSIS_DIR)/Include \
 -I$(CMSIS_DIR)/Device/PY32F071/Include
@@ -99,7 +98,7 @@ C_INCLUDES =  \
 # Compile Definitions and Flags
 # ========================================================
 # C preprocessor macro definitions
-C_DEFS =  \
+C_DEFS = \
 -DUSE_HAL_DRIVER \
 -DUSE_FULL_LL_DRIVER \
 -DPY32F071xB \
@@ -111,26 +110,35 @@ C_DEFS =  \
 MCU = -mcpu=cortex-m0plus -mthumb
 
 # Compilation flags
-# [Change] Added -flto for Link Time Optimization
+# Enable Link Time Optimization (LTO) and section dead-stripping
 CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) -O2 -Wall -fdata-sections -ffunction-sections -flto -MMD -MP
 
 # Linker settings
 LDSCRIPT = py32f071xb.ld
 LIBS = -lc -lm -lnosys
-# [Change] Added -flto for the linker to perform cross-file optimization
+# Enable cross-file optimization via LTO during the linking phase
 LDFLAGS = $(MCU) -specs=nano.specs -flto -T$(LDSCRIPT) $(LIBS) -Wl,--gc-sections -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref
 
 # ========================================================
 # Build Rules
 # ========================================================
-.PHONY: all clean release
+.PHONY: all clean release deploy_header 00 01
 
-all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
+all: deploy_header $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
+
+# Automatically deploy the register definition header to the adjacent Arduino library repository
+deploy_header:
+	@mkdir -p $(ARDUINO_DIR)/src
+	cp $(CORE_DIR)/Inc/mimic_registers.h $(ARDUINO_DIR)/src/mimic_registers.h
+	@echo "✓ mimic_registers.h has been automatically deployed to $(ARDUINO_DIR)/src/"
+
+00 01:
+	$(MAKE) HW_ID=$@ all
 
 release:
 	$(MAKE) clean
-	$(MAKE) HW_REV=MIMIC00
-	$(MAKE) HW_REV=MIMIC01
+	$(MAKE) 00
+	$(MAKE) 01
 
 # Object generation
 C_OBJECTS = $(addprefix $(BUILD_DIR)/,$(notdir $(C_SOURCES:.c=.o)))

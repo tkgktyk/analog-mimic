@@ -28,7 +28,7 @@ To compile the firmware, navigate to this directory and use the build configurat
 
 * **Compile Firmware:**
 ```bash
-make all
+make release
 ```
 
 *This generates the compiler outputs in the `build/` directory, resulting in `analog_mimic_MIMIC00.elf`, `.bin`, and `.hex` files.*
