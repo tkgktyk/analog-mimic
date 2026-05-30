@@ -56,7 +56,6 @@ desktop.ini
 *.swp
 
 # Arduino
-/software/Mimic/src/mimic_registers.h
 /software/*.zip
 
 # PlatformIO (Safety Net)
