@@ -24,6 +24,7 @@
 #include "py32f0xx_hal.h"
 #include "py32f071_ll_i2c.h"
 
+#include "mimic0x_msp.h"
 #include "mimic_registers.h"
 #include "mimic_device.h"
 
@@ -193,28 +194,10 @@ static void SystemClock_Config(void) {
 }
 
 static void MX_I2C1_Init(void) {
-  // 1. Enable peripheral clocks
-  __HAL_RCC_I2C1_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
+  // 1. Initialize hardware resources (Pins, Clocks, NVIC)
+  I2C1_Hardware_Init();
 
-  // 2. Initialize GPIO (PB6=SCL, PB7=SDA)
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF1_I2C1;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  // 3. Configure NVIC
-  HAL_NVIC_SetPriority(I2C1_IRQn, 1, 0); 
-  HAL_NVIC_EnableIRQ(I2C1_IRQn);
-
-  // 4. Force reset the I2C1 module
-  __HAL_RCC_I2C1_FORCE_RESET();
-  __HAL_RCC_I2C1_RELEASE_RESET();
-
-  // 5. I2C LL initialization
+  // 2. I2C LL initialization (Logical parameters)
   LL_I2C_InitTypeDef I2C_InitStruct = {0};
   I2C_InitStruct.PeripheralMode  = LL_I2C_MODE_I2C;
   I2C_InitStruct.ClockSpeed      = I2C_CLOCK_SPEED_HZ;
@@ -234,9 +217,7 @@ static void MX_I2C1_Init(void) {
   LL_I2C_EnableIT_ERR(I2C1);
 }
 
-static void MX_ADC1_Init(void) {
-  __HAL_RCC_ADC_CONFIG(RCC_ADCCLKSOURCE_PCLK_DIV4);
-  
+static void MX_ADC1_Init(void) {  
   ADC_ChannelConfTypeDef sConfig = {0};
 
   hadc1.Instance = ADC1;

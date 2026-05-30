@@ -21,6 +21,7 @@
  ******************************************************************************
  */
 
+#include "mimic0x_msp.h"
 #include "py32f0xx_hal.h"
 
 /* ==================================================================== */
@@ -154,6 +155,8 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc)
 
   if(hadc->Instance == ADC1)
   {
+    __HAL_RCC_ADC_CONFIG(RCC_ADCCLKSOURCE_PCLK_DIV4);
+
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_ADC_CLK_ENABLE();
 
@@ -194,4 +197,34 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef *htim_base)
     /* Enable TIM3 peripheral clock */
     __HAL_RCC_TIM3_CLK_ENABLE();
   }
+}
+
+/**
+ * @brief  Initializes the low-level hardware resources for I2C1.
+ * Note: Since I2C1 uses the LL driver, this function is NOT called 
+ * automatically by HAL and must be invoked manually in main.c.
+ */
+void I2C1_Hardware_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /* 1. Enable peripheral clocks */
+  __HAL_RCC_I2C1_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /* 2. Initialize GPIO (PB6=SCL, PB7=SDA) */
+  GPIO_InitStruct.Pin = I2C_SCL_PIN | I2C_SDA_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  GPIO_InitStruct.Alternate = I2C_SCL_AF;
+  HAL_GPIO_Init(I2C_SCL_PORT, &GPIO_InitStruct);
+
+  /* 3. Configure NVIC for I2C1 */
+  HAL_NVIC_SetPriority(I2C1_IRQn, 1, 0); 
+  HAL_NVIC_EnableIRQ(I2C1_IRQn);
+
+  /* 4. Force reset the I2C1 module to clear any hanging states */
+  __HAL_RCC_I2C1_FORCE_RESET();
+  __HAL_RCC_I2C1_RELEASE_RESET();
 }
