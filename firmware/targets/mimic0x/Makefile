@@ -49,9 +49,9 @@ BUILD_DIR = build/$(HW_REV)
 # Library and Framework Paths (Adjust to your environment)
 # ========================================================
 CORE_DIR       = ../../core
+ARDUINO_DIR       = ../../../software/Mimic
 HAL_DRIVER_DIR = ../../lib/PY32F071_Firmware/Drivers/PY32F071_HAL_Driver
 CMSIS_DIR      = ../../lib/PY32F071_Firmware/Drivers/CMSIS
-DSP_FILTER_DIR = ../../lib/PY32F071_Firmware/Drivers/CMSIS/DSP_Lib/Source/FilteringFunctions
 
 # ========================================================
 # Source Files
@@ -90,6 +90,7 @@ startup_py32f071xx.s
 C_INCLUDES =  \
 -I./Inc \
 -I$(CORE_DIR)/Inc \
+-I$(ARDUINO_DIR)/src \
 -I$(HAL_DRIVER_DIR)/Inc \
 -I$(CMSIS_DIR)/Include \
 -I$(CMSIS_DIR)/Device/PY32F071/Include
