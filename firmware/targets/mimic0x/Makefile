@@ -58,7 +58,7 @@ CMSIS_DIR      = ../../lib/PY32F071_Firmware/Drivers/CMSIS
 # ========================================================
 C_SOURCES = \
 ./Src/main.c \
-./Src/mimic0x_hal_msp.c \
+./Src/mimic0x_msp.c \
 ./Src/py32f071_it.c \
 ./Src/system_py32f071.c \
 $(CORE_DIR)/Src/mimic_device.c \
