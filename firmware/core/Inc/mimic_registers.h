@@ -32,7 +32,7 @@
 #define MIMIC_DEVICE_ID_VALUE             0x4D // WHO_AM_I Value ('M' = 0x4D)
 
 #define MIMIC_SYSTEM_CLOCK_HZ             72000000U
-#define MIMIC_ADC_SAMPLING_HZ             192000U
+#define MIMIC_ADC_SAMPLING_HZ             200000U
 
 #define MIMIC_ADC_MAX_VALUE               4095
 #define MIMIC_ADC_MIN_VALUE               0

@@ -46,8 +46,10 @@
 #define TIM3_SAMPLING_PERIOD ((MIMIC_SYSTEM_CLOCK_HZ / MIMIC_ADC_SAMPLING_HZ) - 1)
 _Static_assert((MIMIC_SYSTEM_CLOCK_HZ % MIMIC_ADC_SAMPLING_HZ) == 0, 
                "Configuration Error: MIMIC_SYSTEM_CLOCK_HZ must be perfectly divisible by MIMIC_ADC_SAMPLING_HZ to prevent jitter.");
+_Static_assert((TIM3_SAMPLING_PERIOD % 2) == 1, 
+               "Configuration Error: (MIMIC_SYSTEM_CLOCK_HZ / MIMIC_ADC_SAMPLING_HZ) must be an EVEN number to align with the 2-phase AMBA AHB bus and prevent phase-shift jitter.");
 
-// =========================================================
+               // =========================================================
 // Global Variables
 // =========================================================
 
