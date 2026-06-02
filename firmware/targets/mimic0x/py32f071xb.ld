@@ -141,6 +141,12 @@ SECTIONS
     *(.data)           /* .data sections */
     *(.data*)          /* .data* sections */
 
+    /* for Analog Mimic */
+    . = ALIGN(4);
+    *(.ramfunc)        /* Functions running on SRAM */
+    *(.ramfunc*)
+    /* ---------------- */
+
     . = ALIGN(4);
     _edata = .;        /* define a global symbol at data end */
   } >RAM AT> FLASH
