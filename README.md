@@ -1,6 +1,6 @@
 # Analog Mimic (analog-mimic)
 
-<!-- ![Analog Mimic Board](docs/images/analog_mimic_board.jpg) -->
+![Analog Mimic01](https://github.com/user-attachments/assets/45d615a1-2eaf-46eb-b544-c169d8db0431)
 
 ## Overview
 Analog Mimic is a drop-in, programmable analog front-end (AFE) module powered by a robust "MCU + DSP" architecture. It is designed to bring software-defined flexibility to physical analog boundaries.
@@ -21,6 +21,8 @@ By isolating the critical execution path and eliminating architectural timing pe
 ## Hardware Concept
 * **Form Factor:** Pmod Type 6 (I²C) compatible layout with a compact, breadboard-friendly footprint (35.56 mm × 20 mm).
 * **On-Chip Integration:** Seamless integration of internal operational amplifier-based input/output buffers, anti-aliasing filters (AAF), and anti-imaging filters (AIF) mapped directly alongside the high-speed processing core.
+
+![Mimic01 Board](https://github.com/user-attachments/assets/ece5b8e5-cae8-4467-9161-f7600a5306df)
 
 ## Software Ecosystem
 To lower the barrier to entry for real-time digital signal processing, we provide a dedicated **C++ library for Arduino**. 
