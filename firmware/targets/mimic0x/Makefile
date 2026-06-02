@@ -122,7 +122,7 @@ LDFLAGS = $(MCU) -specs=nano.specs -flto -T$(LDSCRIPT) $(LIBS) -Wl,--gc-sections
 # ========================================================
 # Build Rules
 # ========================================================
-.PHONY: all clean release deploy_header 00 01
+.PHONY: all clean release deploy_header dac 00 01
 
 all: deploy_header $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
 
@@ -131,6 +131,9 @@ deploy_header:
 	@mkdir -p $(ARDUINO_DIR)/src
 	cp $(CORE_DIR)/Inc/mimic_registers.h $(ARDUINO_DIR)/src/mimic_registers.h
 	@echo "✓ mimic_registers.h has been automatically deployed to $(ARDUINO_DIR)/src/"
+
+dac: CFLAGS += -DENABLE_DAC_PULSE
+dac: clean all
 
 00 01:
 	$(MAKE) HW_ID=$@ all

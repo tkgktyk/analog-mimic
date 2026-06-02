@@ -677,6 +677,12 @@ void ADC_COMP_IRQHandler(void) {
         }
     }
 
+#ifdef ENABLE_DAC_PULSE
+    static uint32_t dac_pulse = MIMIC_ADC_MIN_VALUE;
+    dac_pulse = (dac_pulse == MIMIC_ADC_MIN_VALUE) ? MIMIC_ADC_MAX_VALUE : MIMIC_ADC_MIN_VALUE;
+    DAC1->DHR12R1 = dac_pulse;
+#endif
+
     // =========================================================================
     // 5. Exception (Overrun) Checking 
     // Defer to the end of the ISR as this condition occurs with extreme rarity.
