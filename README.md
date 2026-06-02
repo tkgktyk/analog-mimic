@@ -2,6 +2,30 @@
 
 ![Analog Mimic01](https://github.com/user-attachments/assets/45d615a1-2eaf-46eb-b544-c169d8db0431)
 
+```mermaid
+graph LR
+    classDef plain fill:none,stroke:none,color:#000,font-weight:bold;
+    classDef mcu fill:#f9f9f9,stroke:#333,stroke-width:1px;
+
+    AIN(AIN):::plain
+    AOUT(AOUT):::plain
+
+    AIN --> ADC
+    
+    %% Subgraph for MCU
+    subgraph PY32F071[PY32F071]
+        ADC[Buffer/AAF/ADC]
+        DSP[DSP<br>Analog emulator]
+        DAC[DAC/AIF]
+        
+        ADC --> DSP --> DAC
+    end
+
+    DAC --> AOUT
+
+    style PY32F071 fill:#e6f2ff,stroke:#0066cc,stroke-width:2px,stroke-dasharray:5 5
+```
+
 ## Overview
 Analog Mimic is a drop-in, programmable analog front-end (AFE) module powered by a robust "MCU + DSP" architecture. It is designed to bring software-defined flexibility to physical analog boundaries.
 
