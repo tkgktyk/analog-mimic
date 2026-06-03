@@ -34,7 +34,6 @@ Analog Mimic is a drop-in, programmable analog front-end (AFE) module powered by
 * **Instant Reconfiguration:** Fully reconfigurable on the fly with a single I²C command.
 * **Drop-in Ready:** Designed to be easily integrated into your existing hardware prototyping workflow.
 
-
 <!-- ## Underlying Technology
 **Analog Mimic is powered by OtoHA.**
 
@@ -54,6 +53,9 @@ To lower the barrier to entry for real-time digital signal processing, we provid
 * **Intuitive High-Level API:** Users can dynamically switch emulation modes and fine-tune physical parameters—such as cutoff frequencies, amplifier gains, or envelope release times—by simply passing variables into straightforward function calls.
 
 *For comprehensive details on the inner workings, execution framework, and API configurations, please refer to [firmware_reference.md](docs/firmware_reference.md) and the Doxygen-annotated [Mimic.h](software/Mimic/src/Mimic.h).*
+
+## DEMO: Analog Emulation
+![Demo: Mimic00](https://github.com/user-attachments/assets/6ac824dd-26fe-4b62-9be7-9d35ab113cf7)
 
 ## Product Lineup
 * **mimic0x (Standard Type):** The base model optimized for standard analog emulation and generalized mixed-signal prototyping.
