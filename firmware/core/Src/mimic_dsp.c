@@ -88,7 +88,7 @@ static uint16_t delay_buffer[DELAY_BUFFER_SIZE] = {0};
 // For non-linear LUT: kept outside the union context to allow safe dynamic pointer 
 // switching of the active LUT across different operational modes.
 static uint8_t nonlinear_lut_type = MIMIC_LUT_LOG;
-const int32_t *active_lut_ptr = lut_log;
+static const int32_t *active_lut_ptr = lut_log;
 
 // =========================================================
 // Complete DSP Mode-Specific Contexts (Unified Structs)
@@ -210,21 +210,12 @@ static inline __attribute__((always_inline)) int32_t Q15ToRaw(int32_t q15) {
     return (q15 >> Q15_SHIFT) + MIMIC_ADC_MID_VALUE;
 }
 
-static inline __attribute__((always_inline)) int32_t InterpolateLUT(const int32_t *lut, int32_t adc_val) {
-    int32_t index = adc_val >> LUT_INDEX_SHIFT;
-    int32_t frac = adc_val & LUT_FRAC_MASK;
-    int32_t y0 = lut[index];
-    int32_t y1 = lut[index + 1];
-    int32_t interpolated = y0 + (((y1 - y0) * frac) >> LUT_INDEX_SHIFT);
-    return Q15ToRaw(interpolated);
-}
-
 // =========================================================
 // 2. DSP Core Functions (Returns int32_t, Without Internal Clipping)
 // =========================================================
 
 static inline __attribute__((always_inline)) int32_t ProcessFilterLpf(int32_t adc_val) {
-    Filter1st_t *p = (Filter1st_t *)&dsp_ctx.filter1st;
+    Filter1st_t *p = &dsp_ctx.filter1st;
 
     int32_t in_q15 = RawToQ15(adc_val);
     int32_t state_q15 = p->accum >> FRACTIONAL_BITS_Q15;
@@ -233,7 +224,7 @@ static inline __attribute__((always_inline)) int32_t ProcessFilterLpf(int32_t ad
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessFilterHpf(int32_t adc_val) {
-    Filter1st_t *p = (Filter1st_t *)&dsp_ctx.filter1st;
+    Filter1st_t *p = &dsp_ctx.filter1st;
 
     int32_t in_q15 = RawToQ15(adc_val);
     int32_t state_q15 = p->accum >> FRACTIONAL_BITS_Q15;
@@ -242,7 +233,7 @@ static inline __attribute__((always_inline)) int32_t ProcessFilterHpf(int32_t ad
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessBiquadFilter(int32_t adc_val) {
-    Biquad_t *p = (Biquad_t *)&dsp_ctx.bq;
+    Biquad_t *p = &dsp_ctx.bq;
 
     int32_t x0 = adc_val - MIMIC_ADC_MID_VALUE;
     
@@ -272,7 +263,7 @@ static inline __attribute__((always_inline)) int32_t ProcessBiquadFilter(int32_t
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessPga(int32_t adc_val) {
-    Pga_t *p = (Pga_t *)&dsp_ctx.pga;
+    Pga_t *p = &dsp_ctx.pga;
 
     int32_t in_q15 = RawToQ15(adc_val);
     int32_t signal = in_q15 - p->offset_q15;
@@ -283,14 +274,14 @@ static inline __attribute__((always_inline)) int32_t ProcessPga(int32_t adc_val)
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessPrsWindow(int32_t adc_val) {
-    Comparator_t *p = (Comparator_t *)&dsp_ctx.comp;
+    Comparator_t *p = &dsp_ctx.comp;
 
     if (adc_val > p->upper || adc_val < p->lower) return MIMIC_ADC_MAX_VALUE;
     return MIMIC_ADC_MIN_VALUE;
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessComparatorSchmitt(int32_t adc_val) {
-    Comparator_t *p = (Comparator_t *)&dsp_ctx.comp;
+    Comparator_t *p = &dsp_ctx.comp;
     
     if (adc_val > p->upper) p->wave_last_raw = MIMIC_ADC_MAX_VALUE;
     else if (adc_val < p->lower) p->wave_last_raw = MIMIC_ADC_MIN_VALUE;
@@ -299,7 +290,7 @@ static inline __attribute__((always_inline)) int32_t ProcessComparatorSchmitt(in
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessEnvelopeFollower(int32_t adc_val) {
-    Envelope_t *p = (Envelope_t *)&dsp_ctx.envelope;
+    Envelope_t *p = &dsp_ctx.envelope;
 
     int32_t in_q15 = RawToQ15(adc_val);
     if (p->polarity == MIMIC_POLARITY_NEGATIVE) in_q15 = -in_q15;
@@ -314,7 +305,7 @@ static inline __attribute__((always_inline)) int32_t ProcessEnvelopeFollower(int
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessClipper(int32_t adc_val) {
-    Clipper_t *p = (Clipper_t *)&dsp_ctx.clipper;
+    Clipper_t *p = &dsp_ctx.clipper;
 
     if (adc_val > p->upper) return p->upper;
     if (adc_val < p->lower) return p->lower;
@@ -341,7 +332,7 @@ static inline __attribute__((always_inline)) int32_t ProcessNonlinearLut(int32_t
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessMathDerivative(int32_t adc_val) {
-    Math_t *p = (Math_t *)&dsp_ctx.math;
+    Math_t *p = &dsp_ctx.math;
 
     int32_t in_q15 = RawToQ15(adc_val);
     int32_t diff = in_q15 - p->last_q15;
@@ -358,7 +349,7 @@ static inline __attribute__((always_inline)) int32_t ProcessMathDerivative(int32
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessMathIntegral(int32_t adc_val) {
-    Math_t *p = (Math_t *)&dsp_ctx.math;
+    Math_t *p = &dsp_ctx.math;
 
     int32_t in_q15 = RawToQ15(adc_val);
 
@@ -377,7 +368,7 @@ static inline __attribute__((always_inline)) int32_t ProcessMathIntegral(int32_t
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessSlewRateLimiter(int32_t adc_val) {
-    Math_t *p = (Math_t *)&dsp_ctx.math;
+    Math_t *p = &dsp_ctx.math;
 
     int32_t in_q15 = RawToQ15(adc_val);
     int32_t diff = in_q15 - p->last_q15;
@@ -399,7 +390,7 @@ static inline __attribute__((always_inline)) int32_t ProcessSlewRateLimiter(int3
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessRectifierFull(int32_t adc_val) {
-    Rectifier_t *p = (Rectifier_t *)&dsp_ctx.rect;
+    Rectifier_t *p = &dsp_ctx.rect;
 
     int32_t diff = adc_val - p->vref_raw;
     if (diff < 0) diff = -diff;
@@ -407,7 +398,7 @@ static inline __attribute__((always_inline)) int32_t ProcessRectifierFull(int32_
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessSampleAndHold(int32_t adc_val) {
-    SampleHold_t *p = (SampleHold_t *)&dsp_ctx.sh;
+    SampleHold_t *p = &dsp_ctx.sh;
 
     p->counter++;
     if (p->counter >= p->period_samples) p->counter = 0;
@@ -417,7 +408,7 @@ static inline __attribute__((always_inline)) int32_t ProcessSampleAndHold(int32_
 
 // Dedicated Mode Processing Function for Digital Delay
 static inline __attribute__((always_inline)) int32_t ProcessDelay(int32_t adc_val) {
-    Delay_t *p = (Delay_t *)&dsp_ctx.delay;
+    Delay_t *p = &dsp_ctx.delay;
 
     delay_buffer[p->delay_write_ptr] = adc_val;
     uint32_t read_ptr = (p->delay_write_ptr - p->delay_samples) & DELAY_BUFFER_MASK;
@@ -553,7 +544,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
 // =========================================================
 __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample_RAM(uint16_t adc_val) {
     // Cast to remove volatile qualifier, allowing the compiler to perform full register optimization.
-    MimicPipeline_t *pipe = (MimicPipeline_t *)&pipeline;
+    MimicPipeline_t *pipe = &pipeline;
 
     int32_t dsp_out = 0;
 
@@ -565,7 +556,7 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample_RAM
             case MIMIC_MODE_ID_PGA:                 dsp_out = ProcessPga(adc_val); break;
             case MIMIC_MODE_ID_FILTER_1ST_LPF:      dsp_out = ProcessFilterLpf(adc_val); break;
             case MIMIC_MODE_ID_FILTER_1ST_HPF:      dsp_out = ProcessFilterHpf(adc_val); break;
-            case MIMIC_MODE_ID_FILTER_BIQUAD:       dsp_out = ProcessBiquadFilter(adc_val); break;
+            //case MIMIC_MODE_ID_FILTER_BIQUAD:       dsp_out = ProcessBiquadFilter(adc_val); break;
             case MIMIC_MODE_ID_COMPARATOR_WIN:      dsp_out = ProcessPrsWindow(adc_val); break;
             case MIMIC_MODE_ID_COMPARATOR_SCHMITT:  dsp_out = ProcessComparatorSchmitt(adc_val); break;
             case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:   dsp_out = ProcessEnvelopeFollower(adc_val); break;
@@ -678,6 +669,17 @@ void ADC_COMP_IRQHandler(void) {
     }
 
 #ifdef ENABLE_DAC_PULSE
+    /*
+    * ENABLE_DAC_PULSE — bring-up / hardware-debug only. NOT for normal operation.
+    *
+    * When defined, the ISR overwrites DHR12R1 at its tail with a square wave,
+    * discarding the DSP result for that sample. Use it to verify the DAC output
+    * path (pin, buffer, SWTRIGR timing) on a scope in isolation.
+    *
+    * Mutually exclusive with real DSP output: the two write the same register.
+    * Enabled solely via the dedicated `make dac` target, which forces a full
+    * rebuild into the standard output name, so never ship a `make dac` artifact.
+    */
     static uint32_t dac_pulse = MIMIC_ADC_MIN_VALUE;
     dac_pulse = (dac_pulse == MIMIC_ADC_MIN_VALUE) ? MIMIC_ADC_MAX_VALUE : MIMIC_ADC_MIN_VALUE;
     DAC1->DHR12R1 = dac_pulse;
