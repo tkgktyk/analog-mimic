@@ -13,7 +13,9 @@ HW_ID ?= 01
 BOARD_NAME = MIMIC$(HW_ID)
 
 # Output filename prefix: analog_mimic_MIMIC01 (Used for .elf, .hex, etc.)
-TARGET = analog_mimic_$(BOARD_NAME)
+# Suffix for special/debug builds; empty for normal builds
+DAC_SUFFIX ?=
+TARGET = analog_mimic_$(BOARD_NAME)$(DAC_SUFFIX)
 
 # ==============================================================================
 # 3. Preprocessor Macro Values for Firmware
@@ -43,7 +45,7 @@ CP = $(PREFIX)objcopy
 SZ = $(PREFIX)size
 
 # Build directory
-BUILD_DIR = build/$(BOARD_NAME)
+BUILD_DIR = build/$(BOARD_NAME)$(DAC_SUFFIX)
 
 # ========================================================
 # Library and Framework Paths (Adjust to your environment)
@@ -111,7 +113,8 @@ MCU = -mcpu=cortex-m0plus -mthumb
 
 # Compilation flags
 # Enable Link Time Optimization (LTO) and section dead-stripping
-CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) -O2 -Wall -fdata-sections -ffunction-sections -flto -MMD -MP
+EXTRA_DEFS ?=
+CFLAGS = $(MCU) $(C_DEFS) $(EXTRA_DEFS) $(C_INCLUDES) -O2 -Wall -fdata-sections -ffunction-sections -flto -MMD -MP
 
 # Linker settings
 LDSCRIPT = py32f071xb.ld
@@ -132,8 +135,8 @@ deploy_header:
 	cp $(CORE_DIR)/Inc/mimic_registers.h $(ARDUINO_DIR)/src/mimic_registers.h
 	@echo "✓ mimic_registers.h has been automatically deployed to $(ARDUINO_DIR)/src/"
 
-dac: CFLAGS += -DENABLE_DAC_PULSE
-dac: clean all
+dac:
+	$(MAKE) EXTRA_DEFS=-DENABLE_DAC_PULSE DAC_SUFFIX=_dacpulse all
 
 00 01:
 	$(MAKE) HW_ID=$@ all
