@@ -584,7 +584,13 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample_RAM
 }
 
 void MimicDSP_SetDecimation(uint8_t decimation_n) {
-    decimation_mask = (1U << decimation_n) - 1;
+    uint32_t new_mask = (1U << decimation_n) - 1;
+
+    if (new_mask == decimation_mask) {
+        return;
+    }
+
+    decimation_mask  = new_mask;
     decimation_shift = decimation_n;
 
     // Safely reset internal DSP states (buffers and slopes)
