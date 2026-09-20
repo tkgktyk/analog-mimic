@@ -149,7 +149,7 @@ all: deploy_header $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD
 
 # Automatically deploy the register definition header to the adjacent Arduino library repository
 deploy_header:
-	@if [ -d $(ARDUINO_DIR) ]; then \
+	@if [ -d $(ARDUINO_DIR)/src ]; then \
 	  cp $(CORE_DIR)/Inc/mimic_registers.h $(ARDUINO_DIR)/src/mimic_registers.h; \
 	  echo "✓ mimic_registers.h deployed to $(ARDUINO_DIR)/src/"; \
 	else \
