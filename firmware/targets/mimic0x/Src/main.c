@@ -12,7 +12,7 @@
  * the Free Software Foundation, version 3.
  *
  * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+\* but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
@@ -27,12 +27,16 @@
 #include "mimic0x_msp.h"
 #include "mimic_registers.h"
 #include "mimic_device.h"
+#include "mimic_dsp.h"
 
 // =========================================================
 // Configuration Macros
 // =========================================================
 
 #define VECTOR_TABLE_SIZE 48
+#define VECTOR_INDEX(irqn)  (16u + (uint32_t)(irqn))
+
+volatile __attribute__((aligned(256))) uint32_t ram_vector_table[VECTOR_TABLE_SIZE];
 
 // Peripheral configuration constants
 #define I2C_CLOCK_SPEED_HZ 100000
@@ -43,22 +47,26 @@
 // the system requires a strict margin of approximately 60-70 CPU cycles per sample.
 // Maximum allowable DSP execution cycles = (SYSTEM_CLOCK_HZ / TARGET_SAMPLING_HZ) - 65.
 // Exceeding this budget will result in I2C timeouts and system lockups.
-#define TIM3_SAMPLING_PERIOD ((MIMIC_SYSTEM_CLOCK_HZ / MIMIC_ADC_SAMPLING_HZ) - 1)
+#define TIM2_SAMPLING_PERIOD ((MIMIC_SYSTEM_CLOCK_HZ / MIMIC_ADC_SAMPLING_HZ) - 1)
 _Static_assert((MIMIC_SYSTEM_CLOCK_HZ % MIMIC_ADC_SAMPLING_HZ) == 0, 
                "Configuration Error: MIMIC_SYSTEM_CLOCK_HZ must be perfectly divisible by MIMIC_ADC_SAMPLING_HZ to prevent jitter.");
-_Static_assert((TIM3_SAMPLING_PERIOD % 2) == 1, 
+_Static_assert((TIM2_SAMPLING_PERIOD % 2) == 1, 
                "Configuration Error: (MIMIC_SYSTEM_CLOCK_HZ / MIMIC_ADC_SAMPLING_HZ) must be an EVEN number to align with the 2-phase AMBA AHB bus and prevent phase-shift jitter.");
 
-               // =========================================================
+#ifdef MIMIC_ENGINE_DMA
+DMA_HandleTypeDef hdma_out;
+#endif
+
+// =========================================================
 // Global Variables
 // =========================================================
-
-__attribute__((aligned(256))) uint32_t ram_vector_table[VECTOR_TABLE_SIZE];
 
 // HAL Peripheral Handles
 ADC_HandleTypeDef hadc1;
 DAC_HandleTypeDef hdac1;
-TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim15;
 OPA_HandleTypeDef hopa1;
 OPA_HandleTypeDef hopa2;
 OPA_HandleTypeDef hopa3;
@@ -73,20 +81,148 @@ static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_DAC_Init(void);
-static void MX_TIM3_Init(void);
+static void MX_TIM1_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM15_Init(void);
 static void MX_OPA_Init(void);
+#ifdef MIMIC_ENGINE_DMA
+static void MX_OutputDMA_Init(void);
+#endif
+
+#ifdef MIMIC_ENGINE_CPU
+void ADC_COMP_IRQHandler_DAC(void);
+void ADC_COMP_IRQHandler_GPIO(void);
+
+/**
+ * @brief  Bind the sampling interrupt to the handler of the active output route.
+ * @note   Must be called with the sampling interrupt disabled, i.e. inside the
+ *         host-opened reconfiguration window. The vector table has already been
+ *         relocated to RAM at start-up; only the single entry is rewritten here.
+ */
+static void SetSampleHandler(void (*handler)(void))
+{
+    ram_vector_table[VECTOR_INDEX(ADC_COMP_IRQn)] = (uint32_t)handler;
+    __DSB();
+    __ISB();
+}
+
+#endif /* MIMIC_ENGINE_CPU */
 
 // =========================================================
 // Hardware Callback Implementations
 // =========================================================
+static MimicOutputRoute_t current_route = MIMIC_OUT_OPEN;
 
-// Implements specific hardware control requested by the core for "OPEN state"
-void MimicCallback_DisableOutput(void) {
-    HAL_OPA_Stop(&hopa2);
+void MimicCallback_SetOutputRoute(MimicOutputRoute_t route)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin  = MIMIC_OUTPUT_PIN;
+    gpio.Pull = GPIO_NOPULL;
+
+    current_route = route;
+
+    switch (route) {
+    case MIMIC_OUT_DIGITAL:
+        /* GPIO drives the shared node; the AIF amplifier must be off first. */
+        HAL_OPA_Stop(&hopa2);
+        HAL_DAC_Stop(&hdac1, DAC_CHANNEL_1);
+        gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+        gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+        HAL_GPIO_Init(MIMIC_OUTPUT_PORT, &gpio);
+#ifdef MIMIC_ENGINE_CPU
+        *(volatile uint32_t *)MimicDSP_GetOutputSlot() = ((uint32_t)MIMIC_OUTPUT_PIN << 16);
+        SetSampleHandler(&ADC_COMP_IRQHandler_GPIO);
+#endif
+        break;
+
+    case MIMIC_OUT_ANALOG:
+        /* Analog mode also disables the Schmitt input buffer on the pin. */
+        gpio.Mode = GPIO_MODE_ANALOG;
+        HAL_GPIO_Init(MIMIC_OUTPUT_PORT, &gpio);
+        HAL_OPA_Start(&hopa2);
+        HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
+#ifdef MIMIC_ENGINE_CPU
+        SetSampleHandler(&ADC_COMP_IRQHandler_DAC);
+#endif
+        break;
+
+    case MIMIC_OUT_OPEN:
+    default:
+        HAL_OPA_Stop(&hopa2);
+        HAL_DAC_Stop(&hdac1, DAC_CHANNEL_1);
+        gpio.Mode = GPIO_MODE_ANALOG;
+        HAL_GPIO_Init(MIMIC_OUTPUT_PORT, &gpio);
+        break;
+    }
 }
 
-void MimicCallback_EnableOutput(void) {
-    HAL_OPA_Start(&hopa2); 
+/* ------------------------------------------------------------------ */
+/* Sample engine start / stop                                         */
+/* ------------------------------------------------------------------ */
+void MimicCallback_EngineStop(void)
+{
+#ifdef MIMIC_ENGINE_DMA
+    /* Stop new requests before touching the channel: the CPAR/CMAR/CNDTR
+       registers must not be written while EN is set. */
+    CLEAR_BIT(ADC1->CR2, ADC_CR2_DMA);
+    (void)HAL_DMA_Abort(&hdma_out);          /* may report NO_XFER; ignore */
+    HAL_NVIC_DisableIRQ(DMA1_Channel1_IRQn);
+    /* Conversions must not continue while nothing reads ADC_DR:
+       the second unread result sets OVER (RM 16.7). */
+    CLEAR_BIT(ADC1->CR2, ADC_CR2_EXTTRIG);
+#else
+    HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
+    /* Conversions must not continue while nothing reads ADC_DR:
+       the second unread result sets OVER (RM 16.7). */
+    CLEAR_BIT(ADC1->CR2, ADC_CR2_EXTTRIG);
+#endif
+}
+
+void MimicCallback_EngineStart(void)
+{
+#ifdef MIMIC_ENGINE_CPU
+    (void)ADC1->DR;
+    CLEAR_BIT(ADC1->SR, ADC_SR_OVER | ADC_SR_EOC);
+    HAL_NVIC_ClearPendingIRQ(ADC_COMP_IRQn);
+    HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
+    SET_BIT(ADC1->CR2, ADC_CR2_EXTTRIG);   /* ★ 追加 */
+#else
+    static MimicOutputRoute_t last_route = MIMIC_OUT_OPEN;
+    volatile uint32_t *slot = (volatile uint32_t *)MimicDSP_GetOutputSlot();
+    bool format_changed =
+        ((current_route == MIMIC_OUT_DIGITAL) != (last_route == MIMIC_OUT_DIGITAL));
+
+    if (format_changed) {
+        *slot = (current_route == MIMIC_OUT_DIGITAL)
+              ? ((uint32_t)MIMIC_OUTPUT_PIN << 16)
+              : MIMIC_ADC_MID_VALUE;
+    }
+    last_route = current_route;
+
+    uint32_t dst;
+    /* 1. Seed the slot with a value valid for the destination register,
+          before the channel can transfer it. */
+    if (current_route == MIMIC_OUT_DIGITAL) {
+        dst   = (uint32_t)&MIMIC_OUTPUT_PORT->BSRR;
+    } else {
+        dst   = (uint32_t)&DAC1->DHR12R1;
+    }
+
+    /* 2. Re-arm the channel on the selected destination. */
+    if (HAL_DMA_Start_IT(&hdma_out, (uint32_t)slot, dst, 1) != HAL_OK) {
+        APP_ErrorHandler();
+    }
+
+    /* 3. Discard any interrupt left pending from the previous route. */
+    DMA1->IFCR = DMA_FLAG_GL1;
+    HAL_NVIC_ClearPendingIRQ(DMA1_Channel1_IRQn);
+    HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+
+    (void)ADC1->DR;
+    CLEAR_BIT(ADC1->SR, ADC_SR_OVER | ADC_SR_EOC);
+    SET_BIT(ADC1->CR2, ADC_CR2_DMA);
+    SET_BIT(ADC1->CR2, ADC_CR2_EXTTRIG);
+#endif
 }
 
 // =========================================================
@@ -102,20 +238,35 @@ int main(void) {
   MX_ADC1_Init();
   MX_DAC_Init();
   MX_OPA_Init();
-  MX_TIM3_Init();
+  MX_TIM1_Init();
+  MX_TIM2_Init();
+  MX_TIM15_Init();
+#ifdef MIMIC_ENGINE_DMA
+  MX_OutputDMA_Init();
+#endif
 
   // 2. Initialize Analog Mimic Core Logic
-  MimicDevice_Init(&MimicCallback_EnableOutput, &MimicCallback_DisableOutput);
+  MimicDevice_Init(&MimicCallback_SetOutputRoute, &MimicCallback_EngineStart, &MimicCallback_EngineStop);
 
   // 3. Relocate vector table to RAM for faster/safe ISR execution
   RelocateVectorTableToRAM();
 
   // 4. Start Peripherals
+#ifdef MIMIC_ENGINE_DMA
+  /* Calibration can leave EOC asserted. The ADC DMA request is edge-triggered
+    on the EOC rising edge, so a stale EOC would prevent the first request
+    and stall the output chain permanently. */
+  (void)ADC1->DR;
+  __HAL_ADC_CLEAR_FLAG(&hadc1, ADC_FLAG_EOC);
+  HAL_ADC_Start(&hadc1);          /* EOCIE を立てない */
+#endif
+#ifdef MIMIC_ENGINE_CPU
   HAL_ADC_Start_IT(&hadc1);
+#endif
   HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
-  HAL_TIM_Base_Start(&htim3);
-  
-  // 5. Halt SysTick as it is no longer required and saves cycles
+  HAL_TIM_Base_Start(&htim2);
+
+  // 5. Halt SysTick interrupts
   HAL_SuspendTick();
 
   // Initialization completed
@@ -123,6 +274,9 @@ int main(void) {
   Mimic_SetReadyLED(true);
 
   // Main background loop
+  //MimicCallback_EngineStop();
+  //MimicCallback_SetOutputRoute(MIMIC_OUT_DIGITAL);
+  //MimicCallback_EngineStart();
   while (1) {
     MimicDevice_ProcessPendingTasks();
 
@@ -130,28 +284,30 @@ int main(void) {
     // When a sampling interrupt (TIM3) occurs, execution jumps to the ISR 
     // via the VTOR relocated on SRAM.
     __asm volatile (
-      "dsb \n" // Data Synchronization Barrier: Ensures data access completion
-      "isb \n" // Instruction Synchronization Barrier: Flushes the pipeline
+//      "dsb \n" // Data Synchronization Barrier: Ensures data access completion
+//      "isb \n" // Instruction Synchronization Barrier: Flushes the pipeline
       "wfi \n" 
     );
   }
 }
 
 static void RelocateVectorTableToRAM(void) {
-    // 1. Copy the vector table from Flash to RAM.
-    uint32_t *flash_vectors = (uint32_t *)FLASH_BASE;
+    // 1. Copy the current vector table from Flash (address 0x08000000) to RAM
+    // Flash start address of PY32F071 is 0x08000000
+    uint32_t *flash_vectors = (uint32_t *)0x08000000;
     
     for (int i = 0; i < VECTOR_TABLE_SIZE; i++) {
         ram_vector_table[i] = flash_vectors[i];
     }
 
-    // 2. Data Synchronization Barrier (ensures write completion)
+    // 2. Data memory barrier instruction (ensures write completion)
     __DSB();
 
-    // 3. Update the VTOR register in the System Control Block (SCB)
+    // 3. Set the VTOR register to the address of the table in RAM
+    // Rewrite VTOR in the System Control Block (SCB) of Cortex-M0+
     SCB->VTOR = (uint32_t)ram_vector_table;
 
-    // 4. Instruction Synchronization Barrier (reflects settings immediately)
+    // 4. Instruction synchronization barrier instruction (reflects settings immediately)
     __ISB();
 }
 
@@ -231,7 +387,7 @@ static void MX_ADC1_Init(void) {
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.NbrOfDiscConversion = 1;
-  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T3_TRGO;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T2_CC2;
 
   if (HAL_ADC_Init(&hadc1) != HAL_OK) {
     APP_ErrorHandler();
@@ -245,7 +401,7 @@ static void MX_ADC1_Init(void) {
   // ADC Channel configuration (OPA3 Out -> PB1)
   sConfig.Channel = ADC_CHANNEL_9;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_13CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES_5;
 
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) {
     APP_ErrorHandler();
@@ -265,7 +421,12 @@ static void MX_DAC_Init(void) {
     APP_ErrorHandler();
   }
 
+#ifdef MIMIC_ENGINE_DMA
+  sConfig.DAC_Trigger = DAC_TRIGGER_NONE;      /* TEN=0 */
+#endif
+#ifdef MIMIC_ENGINE_CPU
   sConfig.DAC_Trigger = DAC_TRIGGER_SOFTWARE;
+#endif
   sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
 
   if (HAL_DAC_ConfigChannel(&hdac1, &sConfig, DAC_CHANNEL_1) != HAL_OK) {
@@ -299,47 +460,171 @@ static void MX_OPA_Init(void) {
   HAL_OPA_Start(&hopa3);
 }
 
-static void MX_TIM3_Init(void) {
+static void MX_TIM1_Init(void) {
+  TIM_ClockConfigTypeDef sClock = {0};
+  TIM_SlaveConfigTypeDef sSlave = {0};
+  TIM_OC_InitTypeDef sConfigOC  = {0};
+
+  htim1.Instance               = TIM1;
+  htim1.Init.Prescaler         = 0;
+  htim1.Init.CounterMode       = TIM_COUNTERMODE_UP;
+  htim1.Init.Period            = TIM2_SAMPLING_PERIOD;   /* 359, same as TIM2 */
+  htim1.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK) APP_ErrorHandler();
+
+  /* Count the internal clock, not the trigger */
+  sClock.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClock) != HAL_OK) APP_ErrorHandler();
+
+  /* Reset the counter on every TIM2 update (RM Table 21-2: TIM1 ITR1 = TIM2_TRGO) */
+  sSlave.SlaveMode    = TIM_SLAVEMODE_RESET;
+  sSlave.InputTrigger = TIM_TS_ITR1;
+  if (HAL_TIM_SlaveConfigSynchro(&htim1, &sSlave) != HAL_OK) APP_ErrorHandler();
+
+  /* Falling edge at CCR2 counts after the reset: 144 / 72 MHz = 2.0 us */
+  sConfigOC.OCMode       = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse        = 153;//274;//144;
+  sConfigOC.OCPolarity   = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity  = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode   = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState  = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2) != HAL_OK) {
+    APP_ErrorHandler();
+  }
+
+  __HAL_TIM_MOE_ENABLE(&htim1);      /* TIM1 needs MOE, unlike TIM15 */
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+  __HAL_TIM_ENABLE(&htim1);          /* in case the slave-mode guard skipped CEN */
+}
+
+static void MX_TIM2_Init(void) {
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
 
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 0;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = TIM3_SAMPLING_PERIOD;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.RepetitionCounter = 0;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = TIM2_SAMPLING_PERIOD;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.RepetitionCounter = 0;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
 
-  if (HAL_TIM_Base_Init(&htim3) != HAL_OK) {
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK) {
     APP_ErrorHandler();
   }
 
   sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK) {
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK) {
     APP_ErrorHandler();
   }
 
   // Trigger ADC on Update event
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK) {
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK) {
     APP_ErrorHandler();
   }
+
+  sConfigOC.OCMode     = TIM_OCMODE_PWM1;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+
+  // CH2: ADC トリガ源(EXTSEL=011)。ピン出力なし
+  sConfigOC.Pulse = 100;
+  if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK) {
+    APP_ErrorHandler();
+  }
+  HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_2);
+
+    // CH3: PA2 への基準エッジ
+  sConfigOC.Pulse = 100;
+  if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) {
+    APP_ErrorHandler();
+  }
+  HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_3);
+}
+
+static void MX_TIM15_Init(void) {
+  TIM_SlaveConfigTypeDef sSlave = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim15.Instance               = TIM15;
+  htim15.Init.Prescaler         = 0;
+  htim15.Init.CounterMode       = TIM_COUNTERMODE_UP;
+  htim15.Init.Period            = 1;          /* divide TIM2 TRGO by two */
+  htim15.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
+  htim15.Init.RepetitionCounter = 0;
+  htim15.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim15) != HAL_OK) APP_ErrorHandler();
+
+  /* Count TIM2 update events (RM Table 25-41: TIM15 ITR0 = TIM2_TRGO) */
+  sSlave.SlaveMode    = TIM_SLAVEMODE_EXTERNAL1;
+  sSlave.InputTrigger = TIM_TS_ITR0;
+  if (HAL_TIM_SlaveConfigSynchro(&htim15, &sSlave) != HAL_OK) APP_ErrorHandler();
+
+  sConfigOC.OCMode       = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse        = 1;                 /* 50% at the divided rate */
+  sConfigOC.OCPolarity   = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity  = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode   = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState  = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim15, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) {
+    APP_ErrorHandler();
+  }
+
+  HAL_TIM_PWM_Start(&htim15, TIM_CHANNEL_1);
 }
 
 static void MX_GPIO_Init(void) {
   Mimic_GPIO_Hardware_Init();
 }
 
+#ifdef MIMIC_ENGINE_DMA
+static void MX_OutputDMA_Init(void)
+{
+  __HAL_RCC_DMA_CLK_ENABLE();
+
+  hdma_out.Instance                 = DMA1_Channel1;
+  hdma_out.Init.Direction           = DMA_MEMORY_TO_PERIPH;
+  hdma_out.Init.PeriphInc           = DMA_PINC_DISABLE;
+  hdma_out.Init.MemInc              = DMA_MINC_DISABLE;
+  hdma_out.Init.PeriphDataAlignment = DMA_PDATAALIGN_WORD;
+  hdma_out.Init.MemDataAlignment    = DMA_MDATAALIGN_WORD;
+  hdma_out.Init.Mode                = DMA_CIRCULAR;
+  hdma_out.Init.Priority            = DMA_PRIORITY_VERY_HIGH;
+  if (HAL_DMA_Init(&hdma_out) != HAL_OK) APP_ErrorHandler();
+
+  /* ADC1 の EOC をこのチャネルに割り当てる */
+  HAL_DMA_ChannelMap(&hdma_out, DMA_CHANNEL_MAP_ADC1);
+
+  HAL_DMA_Start_IT(&hdma_out,
+                   (uint32_t)MimicDSP_GetOutputSlot(),
+                   (uint32_t)&DAC1->DHR12R1,
+                   1);
+
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+
+  SET_BIT(ADC1->CR2, ADC_CR2_DMA);                /* ADC の DMA 要求を許可 */
+}
+#endif
+
 /**
  * @brief  System error handler. Traps execution.
  */
 void APP_ErrorHandler(void) {
   while (1) {
+    Mimic_SetReadyLED(true);
+    for (volatile uint32_t i = 0; i < 300000; i++);
+    Mimic_SetReadyLED(false);
+    for (volatile uint32_t i = 0; i < 300000; i++);
   }
 }
-
 #ifdef USE_FULL_ASSERT
 /**
  * @brief  Reports the name of the source file and the source line number

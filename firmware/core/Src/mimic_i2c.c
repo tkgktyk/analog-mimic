@@ -185,9 +185,12 @@ void I2C1_IRQHandler(void) {
         }
     }
 
+    // 5. AF: Acknowledge Failure (Master signals NACK to finalize Slave Read operation)
     // 3. TXE: Transmit buffer empty (Master requests data read out)
     // Process transmission setup only if the BTF (Byte Transfer Finished) flag is clear
-    if (LL_I2C_IsActiveFlag_TXE(I2C1) && (LL_I2C_IsActiveFlag_BTF(I2C1) == 0)) {
+    if (LL_I2C_IsActiveFlag_AF(I2C1)) {
+        LL_I2C_ClearFlag_AF(I2C1);
+    } else if (LL_I2C_IsActiveFlag_TXE(I2C1)) {
         uint8_t tx_data = PerformReadReg(current_reg_addr);
         LL_I2C_TransmitData8(I2C1, tx_data);
         
@@ -212,11 +215,6 @@ void I2C1_IRQHandler(void) {
             MimicDevice_RequestSystemCommand(latched_system_command);
             latched_system_command = MIMIC_CMD_NOP;
         }
-    }
-
-    // 5. AF: Acknowledge Failure (Master signals NACK to finalize Slave Read operation)
-    if (LL_I2C_IsActiveFlag_AF(I2C1)) {
-        LL_I2C_ClearFlag_AF(I2C1);
     }
 
     // 6. Comprehensive Error Handlers (Bus Error, Arbitration Lost, Overrun)

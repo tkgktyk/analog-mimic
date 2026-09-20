@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "mimic_registers.h"
+#include "mimic_device.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,6 +47,7 @@ typedef struct {
     int32_t gain_q15;                           /**< Global Q15 fractional gain multiplier */
     int32_t offset_raw;                         /**< Global output raw DC offset */
     uint8_t mode_id;                            /**< Active operational mode ID */
+    MimicOutputRoute_t output_route;
     uint8_t global_flags;                       /**< System-wide control flags (e.g., inversion, mute) */
     uint8_t decimation_n;                       /**< Decimation shift factor (N) for sample rate reduction */
     uint8_t payload[MIMIC_DSP_PAYLOAD_SIZE];    /**< Mode-specific parameter payload data */
@@ -60,6 +62,8 @@ typedef struct {
  * @note   Clears biquad delay lines and resets tracking waveform latches to their defaults.
  */
 void MimicDSP_Init(void);
+
+void *MimicDSP_GetOutputSlot(void);
 
 /**
  * @brief  Configures the internal oversampling decimation filter.

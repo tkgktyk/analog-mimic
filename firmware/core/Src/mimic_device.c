@@ -58,8 +58,11 @@ MimicDevice_t mimic_device = {
     .pending_system_command = MIMIC_CMD_NOP
 };
 
-static MimicCallback_t cb_enable_output = NULL;
-static MimicCallback_t cb_disable_output = NULL;
+struct {
+    void (*set_output_route)(MimicOutputRoute_t route);
+    void (*engine_start)(void);
+    void (*engine_stop)(void);
+} hooks;
 
 // =========================================================
 // Private Helper Functions
@@ -83,8 +86,36 @@ static inline __attribute__((always_inline)) int16_t ReadRegS16(uint8_t addr) {
     return _MimicDevice_ReadU16_BE(&mimic_device.registers[addr]);
 }
 
-static void ExecuteSystemCommand(uint8_t cmd) {
+static void EngineStop(void)
+{
+#ifdef MIMIC_ENGINE_DMA
+    CLEAR_BIT(ADC1->CR2, ADC_CR2_DMA);
+    hooks.engine_stop();                    /* main.c で HAL_DMA_Abort */
+    HAL_NVIC_DisableIRQ(DMA1_Channel1_IRQn);
+#else
     HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
+#endif
+}
+
+static void EngineStart(void)
+{
+#ifdef MIMIC_ENGINE_DMA
+    hooks.engine_start();                   /* main.c で CPAR 設定 + HAL_DMA_Start_IT */
+    HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+    /* 5'. Enable requests first, so that an EOC rising between the two
+           instructions still generates a request. */
+    SET_BIT(ADC1->CR2, ADC_CR2_DMA);
+    /* 4'. Then clear any EOC left from before the engine was stopped.
+           The request is edge-triggered, so a stale high level would
+           otherwise suppress every subsequent request. */
+    (void)ADC1->DR;
+#else
+    HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
+#endif
+}
+
+static void ExecuteSystemCommand(uint8_t cmd) {
+    EngineStop();
     
     switch (cmd) {
         case MIMIC_CMD_NVM_COMMIT:
@@ -98,16 +129,26 @@ static void ExecuteSystemCommand(uint8_t cmd) {
             break;
     }
     
-    HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
+    EngineStart();
 }
 
 static void UpdateDSPConfiguration(void) {
-    HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
-    cb_disable_output();
+    EngineStop();
+    hooks.set_output_route(MIMIC_OUT_OPEN);
 
     MimicDSP_Config_t config;
     config.mode_id      = MimicDevice_ReadReg(MIMIC_REG_MODE_ID);
     config.global_flags = MimicDevice_ReadReg(MIMIC_REG_GLOBAL_FLAGS);
+    MimicOutputRoute_t route;
+    if (config.global_flags & MIMIC_FLAG_OUT_OPEN) {
+        route = MIMIC_OUT_OPEN;
+    } else if (config.mode_id == MIMIC_MODE_ID_COMPARATOR_SCHMITT ||
+               config.mode_id == MIMIC_MODE_ID_COMPARATOR_WIN) {
+        route = MIMIC_OUT_DIGITAL;
+    } else {
+        route = MIMIC_OUT_ANALOG;
+    }
+    config.output_route = route;
     config.decimation_n = MimicDevice_ReadReg(MIMIC_REG_GLOBAL_DECIMATION_N);
     config.gain_q15     = (int32_t)ReadRegU16(MIMIC_REG_NVM_GAIN_Q15);
     config.offset_raw   = ReadRegS16(MIMIC_REG_GLOBAL_OFFSET) + ReadRegS16(MIMIC_REG_NVM_OFFSET);
@@ -121,20 +162,19 @@ static void UpdateDSPConfiguration(void) {
     // Reset cpu cycles count upon applying new configuration
     MimicDevice_PopCpuCyclesMax();
     
-    if ((config.global_flags & MIMIC_FLAG_OUT_OPEN) == 0) {
-        cb_enable_output();
-    }
-    
-    HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
+    hooks.set_output_route(config.output_route);
+    EngineStart();
 }
 
 // =========================================================
 // Public Initialization and Management APIs
 // =========================================================
 
-void MimicDevice_Init(MimicCallback_t enable_output, MimicCallback_t disable_output) { 
-    cb_enable_output = enable_output;
-    cb_disable_output = disable_output;
+void MimicDevice_Init(void (*cb_set_output_route)(MimicOutputRoute_t route),
+    void (*cb_engine_start)(void), void (*cb_engine_stop)(void)) { 
+    hooks.set_output_route = cb_set_output_route;
+    hooks.engine_start = cb_engine_start;
+    hooks.engine_stop = cb_engine_stop;
 
     MimicI2C_Init();
     MimicDSP_Init();

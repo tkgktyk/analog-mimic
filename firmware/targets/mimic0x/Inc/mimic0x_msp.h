@@ -33,6 +33,16 @@
 
 #include <stdbool.h>
 
+#if defined(TARGET_MIMIC01)
+// Output pin
+#define MIMIC_OUTPUT_PORT   GPIOA
+#define MIMIC_OUTPUT_PIN    GPIO_PIN_6      /* OPA2_INN, shared with the AIF node */
+
+// Test pad
+#define MIMIC_TEST_PAD_PORT     GPIOA
+#define MIMIC_TEST_PAD_PIN      GPIO_PIN_2
+#endif
+
 /* Hardware initialization for LL drivers and generic GPIOs */
 void Mimic_I2C1_Hardware_Init(void);
 void Mimic_GPIO_Hardware_Init(void);

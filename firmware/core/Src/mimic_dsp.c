@@ -24,7 +24,10 @@
 #include "mimic_dsp.h"
 #include "py32f0xx_hal.h"
 #include "mimic_device.h"
+#include "mimic0x_msp.h"
 #include <string.h>
+
+static volatile uint32_t mimic_output_slot = MIMIC_ADC_MID_VALUE;
 
 // =========================================================
 // Fixed-Point Arithmetic Configurations
@@ -74,6 +77,7 @@ typedef struct {
     int32_t out_mult_q15;     // Signed Q15 multiplier
     int32_t out_offset_calc;  // Final computed offset including inversion
     uint8_t current_mode;
+    MimicOutputRoute_t output_route;
     uint8_t global_flags;
     // 2 bytes of implicit padding will be automatically inserted here by the compiler
 } MimicPipeline_t;
@@ -423,12 +427,19 @@ static inline __attribute__((always_inline)) int32_t ProcessDelay(int32_t adc_va
 // =========================================================
 void MimicDSP_Init(void) {
     pipeline.current_mode = MIMIC_MODE_ID_BYPASS_DSP;
+    pipeline.output_route = MIMIC_OUT_ANALOG;
+    //pipeline.output_route = MIMIC_OUT_DIGITAL;
     pipeline.global_flags = 0;
     pipeline.out_mult_q15 = 1 << FRACTIONAL_BITS_Q15;
     pipeline.out_offset_calc = 0;
 
     memset((void*)&dsp_ctx, 0, sizeof(dsp_ctx));
     dsp_ctx.comp.wave_last_raw = MIMIC_ADC_MID_VALUE;
+}
+
+void *MimicDSP_GetOutputSlot(void)
+{
+    return (void *)&mimic_output_slot;
 }
 
 static inline __attribute__((always_inline)) uint16_t ParseU16(const uint8_t *p) {
@@ -444,6 +455,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
 
     pipeline.global_flags = config->global_flags;
     pipeline.current_mode = config->mode_id;
+    pipeline.output_route = config->output_route;
 
     // --- Global Parameters ---
     MimicDSP_SetDecimation(config->decimation_n);
@@ -542,7 +554,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
 // =========================================================
 // 3. The Main DSP Pipeline 
 // =========================================================
-__attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample_RAM(uint16_t adc_val) {
+__attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample(uint16_t adc_val) {
     // Cast to remove volatile qualifier, allowing the compiler to perform full register optimization.
     MimicPipeline_t *pipe = &pipeline;
 
@@ -606,19 +618,20 @@ void MimicDSP_SetDecimation(uint8_t decimation_n) {
 // Configuration for Test and Debug Features
 #define ENABLE_DSP_PROFILING
 
-/**
- * @brief ADC and Comparator Interrupt Handler
- */
-__attribute__((section(".ramfunc")))
-void ADC_COMP_IRQHandler(void) {
-    // =========================================================================
-    // 1. [CRITICAL] DAC Output Trigger (Guarantees absolute time determinism)
-    // Fire immediately upon ISR entry without any branching or variable loads
-    // to minimize jitter. Bypasses 'hdac1.Instance' pointer redirection by
-    // accessing the DAC macro definition directly.
-    // =========================================================================
-    DAC1->SWTRIGR = 1; 
+static inline __attribute__((always_inline))
+uint32_t MuxDacGpio(uint32_t result) {
+    return (pipeline.output_route == MIMIC_OUT_DIGITAL) ? (MIMIC_OUTPUT_PIN << (result >= MIMIC_ADC_MID_VALUE ? 0u : 16u)): result;
+}
 
+static inline __attribute__((always_inline))
+void SampleBody() {
+#ifdef ENABLE_HEARTBEAT
+    static volatile uint32_t mimic_tc_count = 0;
+    if (++mimic_tc_count >= 100000u) {      /* 200 kHz なら 0.5 秒 */
+        mimic_tc_count = 0;
+        GPIOF->ODR ^= GPIO_PIN_6;
+    }
+#endif
 #ifdef ENABLE_DSP_PROFILING
     uint32_t start_tick = SysTick->VAL;
 #endif
@@ -643,7 +656,11 @@ void ADC_COMP_IRQHandler(void) {
         // =========================================================================
         // 4. DSP Processing & Preloading DAC Holding Register for the Next Cycle
         // =========================================================================
-        DAC1->DHR12R1 = MimicDSP_ProcessSample_RAM(raw_val);
+        uint32_t result = MimicDSP_ProcessSample(raw_val);
+        mimic_output_slot = MuxDacGpio(result);      /* DMA/CPU-GPIO */
+#ifdef MIMIC_ENGINE_CPU
+        DAC1->DHR12R1 = result;          /* CPU-DAC */
+#endif
     } else {
         // [DECIMATION & INTERPOLATION PATH]
         // 32-bit native calculation (no casting required, maximum speed)
@@ -651,7 +668,10 @@ void ADC_COMP_IRQHandler(void) {
         decimation_count++;
 
         current_dac_val_q16 += delta_step_q16;
-        DAC1->DHR12R1 = current_dac_val_q16 >> Q16_SHIFT; 
+        mimic_output_slot = MuxDacGpio(current_dac_val_q16);      /* DMA/CPU-GPIO */
+#ifdef MIMIC_ENGINE_CPU
+        DAC1->DHR12R1 = current_dac_val_q16;          /* CPU-DAC */
+#endif
 
         if ((decimation_count & decimation_mask) == 0) {
             
@@ -660,7 +680,7 @@ void ADC_COMP_IRQHandler(void) {
             MimicDevice_SetAdcVal_ISR(x_in); 
 
             y_old = y_new;
-            y_new = MimicDSP_ProcessSample_RAM(x_in);
+            y_new = MimicDSP_ProcessSample(x_in);
 
             // [Micro-Optimization]
             // Since both operands are int32_t, absolutely no casting is required.
@@ -687,8 +707,11 @@ void ADC_COMP_IRQHandler(void) {
     * rebuild into the standard output name, so never ship a `make dac` artifact.
     */
     static uint32_t dac_pulse = MIMIC_ADC_MIN_VALUE;
-    dac_pulse = (dac_pulse == MIMIC_ADC_MIN_VALUE) ? MIMIC_ADC_MAX_VALUE : MIMIC_ADC_MIN_VALUE;
-    DAC1->DHR12R1 = dac_pulse;
+    dac_pulse = (dac_pulse < MIMIC_ADC_MID_VALUE) ? MIMIC_ADC_MAX_VALUE : MIMIC_ADC_MIN_VALUE;
+    mimic_output_slot = MuxDacGpio(dac_pulse);      /* DMA/CPU-GPIO */
+#ifdef MIMIC_ENGINE_CPU
+    DAC1->DHR12R1 = dac_pulse;          /* CPU-DAC */
+#endif
 #endif
 
     // =========================================================================
@@ -712,3 +735,48 @@ void ADC_COMP_IRQHandler(void) {
     MimicDevice_UpdateCpuCyclesMax_ISR(cycles);
 #endif
 }
+
+#ifdef MIMIC_ENGINE_DMA
+__attribute__((section(".ramfunc")))
+void DMA1_Channel1_IRQHandler(void)
+{
+    DMA1->IFCR = DMA_FLAG_TC1;    /* TC フラグクリア */
+    SampleBody();              /* 出力は既に完了している */
+}
+#endif
+#ifdef MIMIC_ENGINE_CPU
+/**
+ * @brief ADC and Comparator Interrupt Handler for DAC
+ */
+__attribute__((used, section(".ramfunc")))
+void ADC_COMP_IRQHandler_DAC(void) {
+    // =========================================================================
+    // 1. [CRITICAL] DAC Output Trigger (Guarantees absolute time determinism)
+    // Fire immediately upon ISR entry without any branching or variable loads
+    // to minimize jitter. Bypasses 'hdac1.Instance' pointer redirection by
+    // accessing the DAC macro definition directly.
+    // =========================================================================
+    DAC1->SWTRIGR = 1;
+    SampleBody();
+}
+
+/**
+ * @brief ADC and Comparator Interrupt Handler for GPIO
+ */
+__attribute__((used, section(".ramfunc")))
+void ADC_COMP_IRQHandler_GPIO(void) {
+    // =========================================================================
+    // 1. [CRITICAL] DAC Output Trigger (Guarantees absolute time determinism)
+    // Fire immediately upon ISR entry without any branching or variable loads
+    // to minimize jitter. Bypasses 'hdac1.Instance' pointer redirection by
+    // accessing the DAC macro definition directly.
+    // =========================================================================
+    MIMIC_OUTPUT_PORT->BSRR = mimic_output_slot;
+    SampleBody();
+}
+
+__attribute__((used, section(".ramfunc")))
+void ADC_COMP_IRQHandler(void) {
+    SampleBody();
+}
+#endif

@@ -50,9 +50,14 @@ typedef struct {
   volatile uint8_t  pending_system_command;           /**< Command byte for deferred system operations (e.g., NVM flush) */
 } MimicDevice_t;
 
-typedef void (*MimicCallback_t)(void);
+typedef enum {
+    MIMIC_OUT_OPEN = 0,   /* high-Z: OPA2 停止、PA6 アナログ */
+    MIMIC_OUT_ANALOG,     /* DAC → AIF(OPA2) */
+    MIMIC_OUT_DIGITAL     /* GPIO push-pull(PA6) */
+} MimicOutputRoute_t;
 
-void MimicDevice_Init(MimicCallback_t enable_output, MimicCallback_t disable_output);
+void MimicDevice_Init(void (*cb_set_output_route)(MimicOutputRoute_t route),
+    void (*cb_engine_start)(void), void (*cb_engine_stop)(void));
 
 // =========================================================
 // Parameter Decoding Utilities (Big-Endian)

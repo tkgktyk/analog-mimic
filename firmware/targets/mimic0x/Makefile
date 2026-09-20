@@ -15,7 +15,6 @@ BOARD_NAME = MIMIC$(HW_ID)
 # Output filename prefix: analog_mimic_MIMIC01 (Used for .elf, .hex, etc.)
 # Suffix for special/debug builds; empty for normal builds
 DAC_SUFFIX ?=
-TARGET = analog_mimic_$(BOARD_NAME)$(DAC_SUFFIX)
 
 # ==============================================================================
 # 3. Preprocessor Macro Values for Firmware
@@ -25,6 +24,22 @@ HW_VERSION_HEX = 0x$(HW_ID)
 
 # Firmware version (Decimal): Commit count modulo 256
 FW_VERSION_DEC = $(shell expr `git rev-list --count HEAD` % 256)
+
+# ==============================================================================
+# Output engine selection (DMA or CPU)
+# ==============================================================================
+ENGINE ?= DMA
+
+ifeq ($(filter $(ENGINE),DMA CPU),)
+  $(error ENGINE must be DMA or CPU (got '$(ENGINE)'))
+endif
+
+# Suffix only for the non-default engine
+ifeq ($(ENGINE),CPU)
+  ENGINE_SUFFIX = _cpu
+else
+  ENGINE_SUFFIX =
+endif
 
 # ========================================================
 # Toolchain Configuration
@@ -45,7 +60,8 @@ CP = $(PREFIX)objcopy
 SZ = $(PREFIX)size
 
 # Build directory
-BUILD_DIR = build/$(BOARD_NAME)$(DAC_SUFFIX)
+TARGET    = analog_mimic_$(BOARD_NAME)$(ENGINE_SUFFIX)$(DAC_SUFFIX)
+BUILD_DIR = build/$(BOARD_NAME)$(ENGINE_SUFFIX)$(DAC_SUFFIX)
 
 # ========================================================
 # Library and Framework Paths (Adjust to your environment)
@@ -80,7 +96,8 @@ $(HAL_DRIVER_DIR)/Src/py32f071_ll_rcc.c \
 $(HAL_DRIVER_DIR)/Src/py32f071_hal_tim.c \
 $(HAL_DRIVER_DIR)/Src/py32f071_hal_opa.c \
 $(HAL_DRIVER_DIR)/Src/py32f071_hal_tim_ex.c \
-$(HAL_DRIVER_DIR)/Src/py32f071_hal_flash.c
+$(HAL_DRIVER_DIR)/Src/py32f071_hal_flash.c \
+$(HAL_DRIVER_DIR)/Src/py32f071_hal_dma.c
 
 # Startup routine
 ASM_SOURCES = \
@@ -107,7 +124,7 @@ C_DEFS = \
 -DTARGET_$(BOARD_NAME) \
 -DMIMIC_HW_VERSION_VALUE=$(HW_VERSION_HEX) \
 -DMIMIC_FW_VERSION_VALUE=$(FW_VERSION_DEC) \
--DARM_MATH_CM0PLUS
+-DMIMIC_ENGINE_$(ENGINE)
 
 MCU = -mcpu=cortex-m0plus -mthumb
 
@@ -125,7 +142,7 @@ LDFLAGS = $(MCU) -specs=nano.specs -flto -T$(LDSCRIPT) $(LIBS) -Wl,--gc-sections
 # ========================================================
 # Build Rules
 # ========================================================
-.PHONY: all clean release deploy_header dac 00 01
+.PHONY: all clean release deploy_header dac cpu 00 01
 
 all: deploy_header $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
 
@@ -137,7 +154,9 @@ deploy_header:
 
 dac:
 	$(MAKE) EXTRA_DEFS=-DENABLE_DAC_PULSE DAC_SUFFIX=_dacpulse all
-
+cpu:
+	$(MAKE) ENGINE=CPU all
+	
 00 01:
 	$(MAKE) HW_ID=$@ all
 

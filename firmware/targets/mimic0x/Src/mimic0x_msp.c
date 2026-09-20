@@ -98,9 +98,6 @@
   // LED
   #define READY_LED_PORT    GPIOF
   #define READY_LED_PIN     GPIO_PIN_6
-  // Test pad
-  #define TEST_PAD_PORT     GPIOA
-  #define TEST_PAD_PIN      GPIO_PIN_2
 #else
   #error "Hardware revision macro is not defined! Please define HW_REV_MIMIC00 in your build configuration."
 #endif
@@ -162,7 +159,7 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc)
 
   if(hadc->Instance == ADC1)
   {
-    __HAL_RCC_ADC_CONFIG(RCC_ADCCLKSOURCE_PCLK_DIV4);
+    __HAL_RCC_ADC_CONFIG(RCC_ADCCLKSOURCE_PCLK_DIV6);
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_ADC_CLK_ENABLE();
@@ -199,10 +196,18 @@ void HAL_DAC_MspInit(DAC_HandleTypeDef *hdac)
 /* ==================================================================== */
 void HAL_TIM_Base_MspInit(TIM_HandleTypeDef *htim_base)
 {
-  if(htim_base->Instance == TIM3)
+  if(htim_base->Instance == TIM1)
   {
-    /* Enable TIM3 peripheral clock */
-    __HAL_RCC_TIM3_CLK_ENABLE();
+    /* Enable TIM1 peripheral clock */
+    __HAL_RCC_TIM1_CLK_ENABLE();
+  }
+  if(htim_base->Instance == TIM2)
+  {
+    /* Enable TIM2 peripheral clock */
+    __HAL_RCC_TIM2_CLK_ENABLE();
+  }
+  if (htim_base->Instance == TIM15) {
+    __HAL_RCC_TIM15_CLK_ENABLE();
   }
 }
 
@@ -228,7 +233,7 @@ void Mimic_I2C1_Hardware_Init(void)
   HAL_GPIO_Init(I2C_SCL_PORT, &GPIO_InitStruct);
 
   /* 3. Configure NVIC for I2C1 */
-  HAL_NVIC_SetPriority(I2C1_IRQn, 1, 0); 
+  HAL_NVIC_SetPriority(I2C1_IRQn, I2C_IRQ_PRIORITY, 0); 
   HAL_NVIC_EnableIRQ(I2C1_IRQn);
 
   /* 4. Force reset the I2C1 module to clear any hanging states */
@@ -259,12 +264,26 @@ void Mimic_GPIO_Hardware_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(READY_LED_PORT, &GPIO_InitStruct);
 
+#ifdef ENABLE_DAC_PULSE
   /* 2. Test Pad (PA2) Configuration */
-  /* Set to Analog mode (high-Z) to minimize noise and power consumption */
-  GPIO_InitStruct.Pin  = TEST_PAD_PIN;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  /* Timing reference output (PA2, TIM2_CH3) */
+  GPIO_InitStruct.Pin  = MIMIC_TEST_PAD_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(TEST_PAD_PORT, &GPIO_InitStruct);
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF0_TIM15;      /* was GPIO_AF2_TIM2 */
+  HAL_GPIO_Init(MIMIC_TEST_PAD_PORT, &GPIO_InitStruct);
+
+  /* PB3: TIM15_CH2 */
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  GPIO_InitStruct.Pin       = GPIO_PIN_3;
+  GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull      = GPIO_NOPULL;
+  GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF11_TIM1;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+#endif
+
 #endif
 }
 
