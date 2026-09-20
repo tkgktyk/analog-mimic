@@ -1,0 +1,10 @@
+label,side,pin_y,type
+AIN,left,230,analog
+VCC,left,323,power
+GND,left,416,gnd
+AOUT,right,135,analog
+GND,right,228,gnd
+SCL,right,321,io
+SDA,right,414,io
+GND,right,507,gnd
+VCC,right,600,power

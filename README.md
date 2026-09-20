@@ -1,6 +1,6 @@
 # Analog Mimic (analog-mimic)
 
-![Analog Mimic01](https://github.com/user-attachments/assets/45d615a1-2eaf-46eb-b544-c169d8db0431)
+![Analog Mimic01](hardware/assembly/mimic01_20260522/mimic01_photo.jpg)
 
 ```mermaid
 graph LR
@@ -42,11 +42,38 @@ OtoHA (Optimization toward Hardware-deterministic Architecture) is the foundatio
 
 By isolating the critical execution path and eliminating architectural timing penalties, OtoHA ensures strict time-invariance and hardware-like precision, allowing standard microcontrollers to operate as strictly deterministic mixed-signal blocks. -->
 
+## Why This Exists
+
+Learning analog circuits requires three separate competencies: designing a
+circuit, building it, and evaluating how it behaves. These are serial — a
+learner must succeed at all three before observing any behaviour at all.
+Failures at the build stage are frequently unrelated to understanding:
+a cold solder joint, a misread colour code, stray capacitance on a
+breadboard. The learner receives no feedback about the circuit, only about
+their assembly technique.
+
+Circuit simulators remove this barrier, but replace physical signals with
+screen output. The learner never connects a probe, never sees noise, never
+observes what happens when a real source drives a real load.
+
+Analog Mimic decouples evaluation from design and construction while keeping
+the signals physical. A learner connects a probe to a real output, observes a
+real waveform on a real oscilloscope, and drives real downstream circuitry —
+without first designing or building the emulated circuit. Changing the
+emulated topology or its parameters is an I²C write from a host
+microcontroller, so a single board covers filters, comparators, rectifiers,
+and non-linear blocks. Comparing a Sallen-Key response against a Schmitt
+trigger becomes a parameter change rather than a rewiring exercise.
+
+Because reconfiguration is driven from the digital side, the module also
+provides an entry path for learners who arrived through Arduino-style digital
+prototyping and have not yet worked with analog signal chains.
+
 ## Hardware Concept
-* **Form Factor:** Pmod Type 6 (I²C) compatible layout with a compact, breadboard-friendly footprint (35.56 mm × 20 mm).
+* **Form Factor:** Pmod Type 6 (I²C) compatible layout with a compact footprint (35.56 mm × 20 mm).
 * **On-Chip Integration:** Seamless integration of internal operational amplifier-based input/output buffers, anti-aliasing filters (AAF), and anti-imaging filters (AIF) mapped directly alongside the high-speed processing core.
 
-![Mimic01 Board](https://github.com/user-attachments/assets/ece5b8e5-cae8-4467-9161-f7600a5306df)
+![Mimic01 Board](hardware/assembly/mimic01_20260522/mimic01.svg)
 
 ## Software Ecosystem
 To lower the barrier to entry for real-time digital signal processing, we provide a dedicated **C++ library for Arduino**. 
@@ -55,6 +82,5 @@ To lower the barrier to entry for real-time digital signal processing, we provid
 
 *For comprehensive details on the inner workings, execution framework, and API configurations, please refer to [firmware_reference.md](docs/firmware_reference.md) and the Doxygen-annotated [Mimic.h](software/Mimic/src/Mimic.h).*
 
-## Product Lineup
-* **mimic0x (Standard Type):** The base model optimized for standard analog emulation and generalized mixed-signal prototyping.
-* **mimic1x (AFE Extended Type):** An enhanced version featuring expanded hardware-level analog front-end scaling for specialized sensor interfacing.
+## DEMO: Analog Emulation
+![Demo: Mimic01](hardware/assembly/mimic01_20260522/demo.png)

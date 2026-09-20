@@ -33,8 +33,6 @@ _autosave-*
 /hardware/mimic0x/**/*.zip
 /hardware/mimic0x/**/production/
 
-/hardware/assembly/
-
 # Python
 __pycache__/
 *.py[cod]

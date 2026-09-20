@@ -22,7 +22,7 @@ Analog Mimic firmware is targeted for the Puya Semiconductor PY32F071 MCU (Arm C
 
 ## 2. Compilation and Build Pipeline
 
-To compile the firmware, navigate to this directory and use the build configuration. The optimization flags are strictly configured (`-O2` or `-O3`) to meet the strict 240-clock-cycle budget for the 300 kHz primary ISR loop, and `.ramfunc` routes time-critical instructions into zero-wait-state SRAM.
+To compile the firmware, navigate to this directory and use the build configuration. The optimization flags are strictly configured (`-O2` or `-O3`) to meet the strict 360-clock-cycle budget for the 200 kHz primary ISR loop, and `.ramfunc` routes time-critical instructions into zero-wait-state SRAM.
 
 ### Build Commands
 
@@ -41,7 +41,7 @@ make clean
 
 ## 3. Flashing & Debug Environment
 
-Target programming is handled asynchronously via the SWD (Serial Wire Debug) pins using a standard CMSIS-DAP compliant debug probe.
+Target programming is handled via the SWD (Serial Wire Debug) pins using a standard CMSIS-DAP compliant debug probe.
 
 ### Target MCU Specification
 
@@ -50,10 +50,16 @@ Target programming is handled asynchronously via the SWD (Serial Wire Debug) pin
 
 ### Flash Programming via pyOCD
 
-pyOCD natively supports the PY32 series by loading the corresponding device pack. Execute the following continuous command to flash the compiled production Intel HEX image onto the MCU:
+pyOCD natively supports the PY32 series by loading the corresponding device pack.
 
 ```bash
-pyocd flash -t py32f071xb analog_mimic_MIMIC00.hex
+pyocd pack install py32f071xb
+```
+
+Execute the following continuous command to flash the compiled production Intel HEX image onto the MCU:
+
+```bash
+pyocd flash -t py32f071xb build/analog_mimic_MIMIC01.hex
 
 ```
 
@@ -72,4 +78,4 @@ pyocd flash -t py32f071xb analog_mimic_MIMIC00.hex
 
 1. Connect your CMSIS-DAP debugger to the SWD test points on the Analog Mimic PCB.
 2. Power the module via the Pmod interface or the VDD pin (3.3V).
-3. Run the `pyocd flash` command. Upon successful completion, reset the MCU to initiate the execution framework and launch the 300 kHz ADC sampling pipeline.
+3. Run the `pyocd flash` command. Upon successful completion, reset the MCU to initiate the execution framework and launch the 200 kHz ADC sampling pipeline.

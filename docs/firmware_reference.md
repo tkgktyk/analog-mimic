@@ -39,7 +39,7 @@ Analog Mimic is built around the Puya Semiconductor PY32F071, a low-cost 72 MHz 
 | **Input Buffer** | OPA1 | Configured as a Hi-Z voltage follower. |
 | **Anti-Aliasing Filter (AAF)** | OPA3 | Configured as a 2nd-order Sallen-Key Low-Pass Filter ($Q = 0.5$, $f_c = 48.2$ kHz). |
 | **Analog Input Interface** | ADC1 (12-bit, Successive Approx.) | Mapped to internal channels or pins depending on the variant. Set to high-speed single-conversion mode triggered automatically by the timer. |
-| **Primary Analog Output** | DAC1 (12-bit R-2R Ladder) | Wired directly to the output smoothing chain (AOUT). Driven by an immediate software trigger (SWTRIGR = 1) at the very first instruction of the Primary ISR, latching the pre-calculated code. |
+| **Primary Analog Output** | DAC1 (12-bit, Buffered) | Wired directly to the output smoothing chain (AOUT). Driven by an immediate software trigger (SWTRIGR = 1) at the very first instruction of the Primary ISR, latching the pre-calculated code. |
 | **Anti-Imaging Filter (AIF)** | OPA2 | Configured as a 2nd-order Sallen-Key Low-Pass Filter ($Q = 0.5$, $f_c = 48.2$ kHz). |
 | **Host Communication** | I2C1 (Hardware Block) | Mapped to Scl/Sda lines for host-level runtime reconfiguration (Priority 1: Secondary ISR). |
 
