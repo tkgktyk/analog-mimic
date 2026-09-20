@@ -34,14 +34,6 @@ Analog Mimic is a drop-in, programmable analog front-end (AFE) module powered by
 * **Instant Reconfiguration:** Fully reconfigurable on the fly with a single I²C command.
 * **Drop-in Ready:** Designed to be easily integrated into your existing hardware prototyping workflow.
 
-
-<!-- ## Underlying Technology
-**Analog Mimic is powered by OtoHA.**
-
-OtoHA (Optimization toward Hardware-deterministic Architecture) is the foundational framework established in our IEEE ESL paper: *"Sub-Clock Hardware-Deterministic Architecture for Phase-Accurate Analog Emulation on Resource-Constrained MCUs"*. 
-
-By isolating the critical execution path and eliminating architectural timing penalties, OtoHA ensures strict time-invariance and hardware-like precision, allowing standard microcontrollers to operate as strictly deterministic mixed-signal blocks. -->
-
 ## Why This Exists
 
 Learning analog circuits requires three separate competencies: designing a
@@ -84,3 +76,69 @@ To lower the barrier to entry for real-time digital signal processing, we provid
 
 ## DEMO: Analog Emulation
 ![Demo: Mimic01](hardware/assembly/mimic01_20260522/demo.png)
+
+## Reproducing the Measurements in the Manuscript
+
+This firmware accompanies a manuscript on output timing determinism,
+prepared for submission to IEEJ Transactions on Electronics, Information
+and Systems. The device and the signal chain described in Sect. 3 of that
+manuscript correspond to the `mimic01` board in this repository.
+
+### Toolchain
+
+* Arm GNU Toolchain 15.2.Rel1 (`arm-none-eabi-gcc` 15.2.1 20251203)
+* GNU Make
+
+All commands below are issued from `firmware/targets/mimic0x/`. If the
+toolchain is not on `PATH`, pass its location explicitly:
+
+    make GCC_PATH="/path/to/arm-gnu-toolchain/bin"
+
+### Issuing agent (build-time)
+
+The agent that writes the output register is selected at compile time
+through `ENGINE`, which defines `MIMIC_ENGINE_DMA` or `MIMIC_ENGINE_CPU`.
+
+| Agent | Normal service | Measurement build      |
+|-------|----------------|------------------------|
+| DMA   | `make`         | `make dac`             |
+| CPU   | `make cpu`     | `make ENGINE=CPU dac`  |
+
+Each build writes to its own tree under `build/`, so the four coexist:
+`MIMIC01`, `MIMIC01_cpu`, `MIMIC01_dacpulse`, `MIMIC01_cpu_dacpulse`.
+
+Note that `ENGINE` must be given on the command line when combined with
+`dac`. The `cpu` target sets `ENGINE` only for its own recursive
+invocation, so `make cpu dac` builds the DMA variant.
+
+### Output route (run-time)
+
+The route is **not** a build option. The host selects the analog route
+(DAC + AIF) or the digital route (GPIO) over I²C as part of a
+reconfiguration, together with the topology and the coefficients. The four
+rows of Table 1 are therefore two builds, each exercised on both routes.
+
+### Measurement build
+
+The distributions of Sect. 4 were taken with `ENABLE_DAC_PULSE`, a toggle
+that overrides the emulated output so that every period carries a
+transition of known polarity. A firmware built without it emulates the
+selected circuit as usual and will not reproduce Fig. 4 and Fig. 5.
+
+### Dependency
+
+`firmware/lib/PY32F071_Firmware` is
+[OpenPuya/PY32F071_Firmware](https://github.com/OpenPuya/PY32F071_Firmware)
+v1.0.5 (`73e384cd`), distributed under BSD-3-Clause. Its contents are
+included in this repository; see `firmware/lib/PY32F071_Firmware/LICENSE`.
+
+### Host side
+
+The host is not included here. It only issues I²C writes to
+select the emulation mode, the output route, and the coefficients. The
+register map is defined in `firmware/core/Inc/mimic_registers.h`, which is
+the authoritative description of the interface; any I²C master will do.
+
+The measurements of Sect. 4 were taken with an Arduino host performing a
+single reconfiguration before each acquisition: a second-order biquad
+filter on the analog route, and a comparator mode on the digital route.
