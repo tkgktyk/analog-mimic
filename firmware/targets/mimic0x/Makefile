@@ -23,7 +23,8 @@ DAC_SUFFIX ?=
 HW_VERSION_HEX = 0x$(HW_ID)
 
 # Firmware version (Decimal): Commit count modulo 256
-FW_VERSION_DEC = $(shell expr `git rev-list --count HEAD` % 256)
+FW_VERSION_DEC ?= $(shell git rev-list --count HEAD 2>/dev/null | awk '{print $$1%256}')
+FW_VERSION_DEC := $(if $(FW_VERSION_DEC),$(FW_VERSION_DEC),0)
 
 # ==============================================================================
 # Output engine selection (DMA or CPU)
