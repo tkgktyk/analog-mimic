@@ -149,9 +149,12 @@ all: deploy_header $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD
 
 # Automatically deploy the register definition header to the adjacent Arduino library repository
 deploy_header:
-	@mkdir -p $(ARDUINO_DIR)/src
-	cp $(CORE_DIR)/Inc/mimic_registers.h $(ARDUINO_DIR)/src/mimic_registers.h
-	@echo "✓ mimic_registers.h has been automatically deployed to $(ARDUINO_DIR)/src/"
+	@if [ -d $(ARDUINO_DIR) ]; then \
+	  cp $(CORE_DIR)/Inc/mimic_registers.h $(ARDUINO_DIR)/src/mimic_registers.h; \
+	  echo "✓ mimic_registers.h deployed to $(ARDUINO_DIR)/src/"; \
+	else \
+	  echo "- analog-mimic-arduino not found; skipping header deployment"; \
+	fi
 
 dac:
 	$(MAKE) EXTRA_DEFS=-DENABLE_DAC_PULSE DAC_SUFFIX=_dacpulse all
