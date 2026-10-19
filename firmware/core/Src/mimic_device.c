@@ -3,7 +3,7 @@
  * @file    mimic_device.c
  * @author  TAKAGI Katsuyuki
  * @brief   Implementation of Global Device Context, Subsystem Initialization, 
- * and Thread-Safe Critical Section Accessor Routines.
+ *          and Thread-Safe Critical Section Accessor Routines.
  *-----------------------------------------------------------------------------
  * Copyright (C) 2026 TAKAGI Katsuyuki
  *
@@ -24,6 +24,7 @@
 #include "mimic_device.h"
 #include <string.h>
 #include "py32f0xx_hal.h"
+#include "mimic0x_msp.h"
 #include "mimic_flash.h"
 #include "mimic_dsp.h"
 #include "mimic_i2c.h"
@@ -34,8 +35,7 @@
 
 /**
  * @brief  Executes a code block with interrupts disabled, restoring the original 
- * interrupt state (PRIMASK) upon completion.
- * @note   This macro handles the nested state preservation safely within a do-while block.
+ *         interrupt state (PRIMASK) upon completion.
  */
 #define CRITICAL_SECTION_BLOCK(block_code) do { \
     uint32_t __primask_save = __get_PRIMASK();  \
@@ -48,183 +48,158 @@
 // Global Device State Instantiation
 // =========================================================
 
-// Defines and initializes the single, system-wide global device state structure.
 MimicDevice_t mimic_device = {
-    .registers = {0},
-    .status = 0x00,
-    .adc_val = MIMIC_ADC_MIN_VALUE,
-    .cpu_cycles_max = 0,
-    .i2c_dirty_flag = false,
+    .registers              = {0},
+    .status                 = 0x00,
+    .adc_val                = MIMIC_ADC_MIN_VALUE,
+    .cpu_cycles_max         = 0,
+    .pending_dsp_update     = false,
     .pending_system_command = MIMIC_CMD_NOP
 };
-
-struct {
-    void (*set_output_route)(MimicOutputRoute_t route);
-    void (*engine_start)(void);
-    void (*engine_stop)(void);
-} hooks;
 
 // =========================================================
 // Private Helper Functions
 // =========================================================
 
-static void LoadCalibration(void) {
+static void LoadCalibration(void)
+{
     uint16_t gain_q15 = MimicFlash_ReadGainQ15Data();
     mimic_device.registers[MIMIC_REG_NVM_GAIN_Q15_H] = (uint8_t)(gain_q15 >> 8);
     mimic_device.registers[MIMIC_REG_NVM_GAIN_Q15_L] = (uint8_t)(gain_q15 & 0xFF);
-    
+
     int16_t offset = MimicFlash_ReadOffsetData();
     mimic_device.registers[MIMIC_REG_NVM_OFFSET_H] = (uint8_t)(offset >> 8);
     mimic_device.registers[MIMIC_REG_NVM_OFFSET_L] = (uint8_t)(offset & 0xFF);
 }
 
-static inline __attribute__((always_inline)) uint16_t ReadRegU16(uint8_t addr) {
+static inline __attribute__((always_inline)) uint16_t ReadRegU16(uint8_t addr)
+{
     return _MimicDevice_ReadU16_BE(&mimic_device.registers[addr]);
 }
 
-static inline __attribute__((always_inline)) int16_t ReadRegS16(uint8_t addr) {
-    return _MimicDevice_ReadU16_BE(&mimic_device.registers[addr]);
-}
-
-static void EngineStop(void)
+static inline __attribute__((always_inline)) int16_t ReadRegS16(uint8_t addr)
 {
-#ifdef MIMIC_ENGINE_DMA
-    CLEAR_BIT(ADC1->CR2, ADC_CR2_DMA);
-    hooks.engine_stop();                    /* main.c で HAL_DMA_Abort */
-    HAL_NVIC_DisableIRQ(DMA1_Channel1_IRQn);
-#else
-    HAL_NVIC_DisableIRQ(ADC_COMP_IRQn);
-#endif
+    return _MimicDevice_ReadS16_BE(&mimic_device.registers[addr]);
 }
 
-static void EngineStart(void)
+static MimicOutputRoute_t ResolveOutputRoute(uint8_t mode_id, uint8_t global_flags)
 {
-#ifdef MIMIC_ENGINE_DMA
-    hooks.engine_start();                   /* main.c で CPAR 設定 + HAL_DMA_Start_IT */
-    HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
-    /* 5'. Enable requests first, so that an EOC rising between the two
-           instructions still generates a request. */
-    SET_BIT(ADC1->CR2, ADC_CR2_DMA);
-    /* 4'. Then clear any EOC left from before the engine was stopped.
-           The request is edge-triggered, so a stale high level would
-           otherwise suppress every subsequent request. */
-    (void)ADC1->DR;
-#else
-    HAL_NVIC_EnableIRQ(ADC_COMP_IRQn);
-#endif
-}
-
-static void ExecuteSystemCommand(uint8_t cmd) {
-    EngineStop();
-    
-    switch (cmd) {
-        case MIMIC_CMD_NVM_COMMIT:
-            MimicFlash_WriteGainQ15Data(ReadRegU16(MIMIC_REG_NVM_GAIN_Q15));
-            MimicFlash_WriteOffsetData(ReadRegS16(MIMIC_REG_NVM_OFFSET));
-            break;
-        case MIMIC_CMD_NVM_RELOAD:
-            LoadCalibration();
-            break;
-        default:
-            break;
+    if (global_flags & MIMIC_FLAG_OUT_OPEN) {
+        return MIMIC_OUT_OPEN;
     }
-    
-    EngineStart();
+    if (mode_id == MIMIC_MODE_ID_COMPARATOR_SCHMITT ||
+        mode_id == MIMIC_MODE_ID_COMPARATOR_WIN) {
+        return MIMIC_OUT_DIGITAL;
+    }
+    return MIMIC_OUT_ANALOG;
 }
 
-static void UpdateDSPConfiguration(void) {
-    EngineStop();
-    hooks.set_output_route(MIMIC_OUT_OPEN);
+static void UpdateDSPConfiguration(void)
+{
+    // 1. Stop sampling triggers/DMA and isolate the analog/digital output node
+    Mimic_HW_StopEngine();
+    Mimic_HW_SetOutputRoute(MIMIC_OUT_OPEN);
 
+    // 2. Snapshot shadow registers into a cohesive DSP configuration struct
     MimicDSP_Config_t config;
     config.mode_id      = MimicDevice_ReadReg(MIMIC_REG_MODE_ID);
     config.global_flags = MimicDevice_ReadReg(MIMIC_REG_GLOBAL_FLAGS);
-    MimicOutputRoute_t route;
-    if (config.global_flags & MIMIC_FLAG_OUT_OPEN) {
-        route = MIMIC_OUT_OPEN;
-    } else if (config.mode_id == MIMIC_MODE_ID_COMPARATOR_SCHMITT ||
-               config.mode_id == MIMIC_MODE_ID_COMPARATOR_WIN) {
-        route = MIMIC_OUT_DIGITAL;
-    } else {
-        route = MIMIC_OUT_ANALOG;
-    }
-    config.output_route = route;
+    config.output_route = ResolveOutputRoute(config.mode_id, config.global_flags);
     config.decimation_n = MimicDevice_ReadReg(MIMIC_REG_GLOBAL_DECIMATION_N);
     config.gain_q15     = (int32_t)ReadRegU16(MIMIC_REG_NVM_GAIN_Q15);
     config.offset_raw   = ReadRegS16(MIMIC_REG_GLOBAL_OFFSET) + ReadRegS16(MIMIC_REG_NVM_OFFSET);
-    
-    memcpy(config.payload, 
-           (const void *)&mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START], 
+
+    memcpy(config.payload,
+           (const void *)&mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START],
            MIMIC_DSP_PAYLOAD_SIZE);
 
+    // 3. Apply new parameters to DSP core (also initializes the output slot safely)
     MimicDSP_UpdateParameters(&config);
-    
-    // Reset cpu cycles count upon applying new configuration
+
+    // 4. Reset profiling peak counter for the newly configured mode
     MimicDevice_PopCpuCyclesMax();
-    
-    hooks.set_output_route(config.output_route);
-    EngineStart();
+
+    // 5. Configure hardware output path and restart deterministic sampling engine
+    Mimic_HW_SetOutputRoute(config.output_route);
+    Mimic_HW_StartEngine(config.output_route, MimicDSP_GetOutputSlot());
+}
+
+static void ExecuteSystemCommand(uint8_t cmd, bool *out_needs_dsp_reconfig)
+{
+    switch (cmd) {
+        case MIMIC_CMD_NVM_COMMIT:
+            Mimic_HW_StopEngine();
+            MimicFlash_WriteGainQ15Data(ReadRegU16(MIMIC_REG_NVM_GAIN_Q15));
+            MimicFlash_WriteOffsetData(ReadRegS16(MIMIC_REG_NVM_OFFSET));
+            Mimic_HW_StartEngine(
+                ResolveOutputRoute(MimicDevice_ReadReg(MIMIC_REG_MODE_ID),
+                                   MimicDevice_ReadReg(MIMIC_REG_GLOBAL_FLAGS)),
+                MimicDSP_GetOutputSlot()
+            );
+            break;
+
+        case MIMIC_CMD_NVM_RELOAD:
+            LoadCalibration();
+            *out_needs_dsp_reconfig = true;
+            break;
+
+        default:
+            break;
+    }
 }
 
 // =========================================================
 // Public Initialization and Management APIs
 // =========================================================
 
-void MimicDevice_Init(void (*cb_set_output_route)(MimicOutputRoute_t route),
-    void (*cb_engine_start)(void), void (*cb_engine_stop)(void)) { 
-    hooks.set_output_route = cb_set_output_route;
-    hooks.engine_start = cb_engine_start;
-    hooks.engine_stop = cb_engine_stop;
-
+void MimicDevice_Init(void)
+{
     MimicI2C_Init();
     MimicDSP_Init();
-
     LoadCalibration();
+
+    // Apply default configuration and start the sampling engine
+    UpdateDSPConfiguration();
 }
 
-/**
- * @brief Thread-safe setter for status flags.
- * Prevents data races when multiple interrupts try to update the status
- * register simultaneously.
- */
-void MimicDevice_SetStatusFlag(uint8_t flag) {
+void MimicDevice_SetStatusFlag(uint8_t flag)
+{
     CRITICAL_SECTION_BLOCK(
         mimic_device.status |= flag;
     );
 }
 
-/**
- * @brief Retrieves the status and clears transient error flags atomically.
- * Called primarily when the I2C master reads the STATUS register.
- */
-uint8_t MimicDevice_GetAndClearStatusFlag(void) {
+uint8_t MimicDevice_GetAndClearStatusFlag(void)
+{
     uint8_t current_status;
-    
+
     CRITICAL_SECTION_BLOCK(
         current_status = mimic_device.status;
         // Retain active state flags (e.g., SYS_READY) but clear transient errors
         mimic_device.status &= MIMIC_STATUS_STATE_MASK;
-    );  
+    );
 
     return current_status;
 }
 
-void MimicDevice_ProcessPendingTasks(void) {
+void MimicDevice_ProcessPendingTasks(void)
+{
     uint8_t cmd = MIMIC_CMD_NOP;
-    
-    CRITICAL_SECTION_BLOCK( 
+    bool needs_dsp_update = false;
+
+    CRITICAL_SECTION_BLOCK(
         cmd = mimic_device.pending_system_command;
         mimic_device.pending_system_command = MIMIC_CMD_NOP;
+
+        needs_dsp_update = mimic_device.pending_dsp_update;
+        mimic_device.pending_dsp_update = false;
     );
-    
+
     if (cmd != MIMIC_CMD_NOP) {
-        ExecuteSystemCommand(cmd);
+        ExecuteSystemCommand(cmd, &needs_dsp_update);
     }
 
-    bool is_i2c_dirty = mimic_device.i2c_dirty_flag;
-    mimic_device.i2c_dirty_flag = false;
-    
-    if (is_i2c_dirty) {
+    if (needs_dsp_update) {
         UpdateDSPConfiguration();
     }
 }

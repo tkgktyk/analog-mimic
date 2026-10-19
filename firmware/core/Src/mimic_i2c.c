@@ -3,7 +3,7 @@
  * @file    mimic_i2c.c
  * @author  TAKAGI Katsuyuki
  * @brief   Implementation of I2C Peripheral Interrupt Handlers (Secondary ISR), 
- * Packet Deserialization, and Runtime Parameter Hot-Swapping.
+ *          Packet Deserialization, and Runtime Parameter Hot-Swapping.
  *-----------------------------------------------------------------------------
  * Copyright (C) 2026 TAKAGI Katsuyuki
  *
@@ -31,12 +31,16 @@
 // =========================================================
 #define I2C_READ_ERROR_VALUE 0xFF
 
-// I2C Reception state (1-byte at a time)
-// Note: Static variables are implicitly initialized to 0/false (allocated in .bss)
-static uint8_t current_reg_addr;
-static bool is_reg_addr_received;
-static volatile bool is_dsp_update_required;
-static volatile uint8_t latched_system_command;
+// =========================================================
+// I2C Transaction State (Exclusive to I2C1_IRQHandler)
+// =========================================================
+// Note: 'volatile' is NOT required here because these variables are accessed
+// strictly within I2C1_IRQHandler (never shared across threads or other ISRs).
+// Hand-off to the main loop occurs explicitly upon STOP condition detection.
+static uint8_t tx_reg_addr;
+static bool    tx_addr_received;
+static bool    tx_reg_modified;
+static uint8_t tx_latched_cmd;
 
 // =========================================================
 // I2C Register Access Interfaces
@@ -45,10 +49,11 @@ static volatile uint8_t latched_system_command;
 /**
  * @brief Writes a value to a specified I2C shadow register.
  * @param addr The register address to write to.
- * @param val The value to write.
+ * @param val  The value to write.
  * @return true if successful, false if the access is out of bounds or read-only.
  */
-static bool PerformWriteReg(uint8_t addr, uint8_t val) {
+static bool PerformWriteReg(uint8_t addr, uint8_t val)
+{
     // Valid writable memory map bounds: Reflect changes directly to shadow RAM
     if (addr >= MIMIC_REG_GLOBAL_START && addr < MIMIC_REG_SHADOW_SIZE) {
         MimicDevice_WriteReg(addr, val);
@@ -65,7 +70,8 @@ static bool PerformWriteReg(uint8_t addr, uint8_t val) {
  * @param addr The register address to read from.
  * @return The value of the requested register, or I2C_READ_ERROR_VALUE on error.
  */
-static uint8_t PerformReadReg(uint8_t addr) {
+static uint8_t PerformReadReg(uint8_t addr)
+{
     static uint16_t latched_adc_val = 0;
     static uint16_t latched_cpu_cycles = 0;
 
@@ -103,8 +109,6 @@ static uint8_t PerformReadReg(uint8_t addr) {
 
     // 2. Handle all remaining spaces (Global, Mode, Payload, NVM) via standard memory map
     if (addr < MIMIC_REG_SHADOW_SIZE) {
-        // Automatically returns shadow RAM values for addresses between 0x10 and 0x3F.
-        // This implicitly covers the NVM calibration read-back region as well.
         return MimicDevice_ReadReg(addr);
     }
 
@@ -117,107 +121,85 @@ static uint8_t PerformReadReg(uint8_t addr) {
 // Initialization
 // =========================================================
 
-/**
- * @brief Initializes the I2C request handler variables.
- * @note  Default state defaults to 0 (unity gain / through mode) via system reset.
- */
-void MimicI2C_Init(void) {
-    current_reg_addr = 0;
-    is_reg_addr_received = false;
+void MimicI2C_Init(void)
+{
+    tx_reg_addr      = 0;
+    tx_addr_received = false;
+    tx_reg_modified  = false;
+    tx_latched_cmd   = MIMIC_CMD_NOP;
 }
 
 // =========================================================
-// I2C Low-Layer Interrupt Handler (Replaces HAL Callbacks)
+// I2C Low-Layer Interrupt Handler
 // =========================================================
 
-/**
- * @brief I2C Hardware Interrupt Entry Point
- */
-void I2C1_IRQHandler(void) {
-  
+void I2C1_IRQHandler(void)
+{
     // 1. ADDR: Address matched (Communication started)
     if (LL_I2C_IsActiveFlag_ADDR(I2C1)) {
-        // [CRITICAL] Before clearing the ADDR flag, read SR2 to determine direction.
-        // Reading SR2 serves as the latter half of the hardware clear sequence.
-        // To ensure atomicity and avoid race conditions, read SR1 then SR2 sequentially.
-        __IO uint32_t sr1_val = I2C1->SR1; // Start clear sequence
-        __IO uint32_t sr2_val = I2C1->SR2; // Complete clear sequence and latch direction
+        // Read SR1 then SR2 sequentially to clear ADDR flag and latch direction
+        __IO uint32_t sr1_val = I2C1->SR1;
+        __IO uint32_t sr2_val = I2C1->SR2;
+        (void)sr1_val;
 
-        // Direction analysis (SR2_TRA: Transmitter/receiver direction flag)
-        // 0: Read (Slave receives), 1: Write (Slave transmits)
+        // Direction analysis (SR2_TRA: 0 = Slave receives/Write, 1 = Slave transmits/Read)
         if ((sr2_val & I2C_SR2_TRA) == 0) {
-            // Master requests a WRITE operation (Slave receives data)
-            // The incoming initial byte must be interpreted as the target register address.
-            is_reg_addr_received = false;
-        } else {
-            // Master requests a READ operation (Slave transmits data)
-            // Prepare transmission buffer based on the pre-latched current_reg_addr.
-            // This will be processed shortly by the subsequent TXE flag block.
+            tx_addr_received = false;
         }
-        
-        // Suppress compiler unused-variable warning safely
-        (void)sr1_val; 
     }
 
-    // 2. RXNE: Receive buffer not empty (Data package received from Master)
+    // 2. RXNE: Receive buffer not empty (Data byte received from Master)
     if (LL_I2C_IsActiveFlag_RXNE(I2C1)) {
         uint8_t rx_data = LL_I2C_ReceiveData8(I2C1);
-        
-        if (is_reg_addr_received == false) {
-            // Byte 1 represents the operation target register address pointer
-            current_reg_addr = rx_data;
-            is_reg_addr_received = true;
+
+        if (!tx_addr_received) {
+            // Byte 1 represents the target register address pointer
+            tx_reg_addr      = rx_data;
+            tx_addr_received = true;
         } else {
-            // Byte 2 and subsequent bytes contain payload data; push to shadow register
-            if (current_reg_addr < MIMIC_REG_SHADOW_SIZE) {
-                if (PerformWriteReg(current_reg_addr, rx_data)) {
-                    // Raise update trigger indicating a DSP parameter reconfiguration
-                    is_dsp_update_required = true; 
+            // Byte 2+ contain payload data; push to shadow register or command port
+            if (tx_reg_addr < MIMIC_REG_SHADOW_SIZE) {
+                if (PerformWriteReg(tx_reg_addr, rx_data)) {
+                    tx_reg_modified = true;
                 }
-                current_reg_addr++;
-            } else if (current_reg_addr == MIMIC_REG_CMD_PORT) {
-                // Command processing interface (outside shadow RAM limits)
-                latched_system_command = rx_data;
-                current_reg_addr++;
+                tx_reg_addr++;
+            } else if (tx_reg_addr == MIMIC_REG_CMD_PORT) {
+                tx_latched_cmd = rx_data;
+                tx_reg_addr++;
             } else {
                 MimicDevice_SetStatusFlag(MIMIC_STATUS_I2C_COM_ERR);
             }
         }
     }
 
-    // 5. AF: Acknowledge Failure (Master signals NACK to finalize Slave Read operation)
-    // 3. TXE: Transmit buffer empty (Master requests data read out)
-    // Process transmission setup only if the BTF (Byte Transfer Finished) flag is clear
+    // 3. AF / TXE: Master Read handling
     if (LL_I2C_IsActiveFlag_AF(I2C1)) {
         LL_I2C_ClearFlag_AF(I2C1);
     } else if (LL_I2C_IsActiveFlag_TXE(I2C1)) {
-        uint8_t tx_data = PerformReadReg(current_reg_addr);
+        uint8_t tx_data = PerformReadReg(tx_reg_addr);
         LL_I2C_TransmitData8(I2C1, tx_data);
-        
-        // Automatic address pointer auto-increment
-        if (current_reg_addr < MIMIC_REG_SHADOW_SIZE) {
-            current_reg_addr++;
+
+        if (tx_reg_addr < MIMIC_REG_SHADOW_SIZE) {
+            tx_reg_addr++;
         }
     }
 
-    // 4. STOPF: Stop condition detected (Transaction finished)
+    // 4. STOPF: Stop condition detected (Transaction finished -> Notify Main Loop)
     if (LL_I2C_IsActiveFlag_STOP(I2C1)) {
         LL_I2C_ClearFlag_STOP(I2C1);
-        
-        // Notify the main thread if any runtime parameters were altered during transaction
-        if (is_dsp_update_required) {
+
+        if (tx_reg_modified) {
             MimicDevice_RequestUpdate();
-            is_dsp_update_required = false;
+            tx_reg_modified = false;
         }
 
-        // Defer system commands execution to the main background loop
-        if (latched_system_command != MIMIC_CMD_NOP) {
-            MimicDevice_RequestSystemCommand(latched_system_command);
-            latched_system_command = MIMIC_CMD_NOP;
+        if (tx_latched_cmd != MIMIC_CMD_NOP) {
+            MimicDevice_RequestSystemCommand(tx_latched_cmd);
+            tx_latched_cmd = MIMIC_CMD_NOP;
         }
     }
 
-    // 6. Comprehensive Error Handlers (Bus Error, Arbitration Lost, Overrun)
+    // 5. Error Handlers (Bus Error, Arbitration Lost, Overrun)
     if (LL_I2C_IsActiveFlag_BERR(I2C1)) {
         LL_I2C_ClearFlag_BERR(I2C1);
         MimicDevice_SetStatusFlag(MIMIC_STATUS_I2C_COM_ERR);

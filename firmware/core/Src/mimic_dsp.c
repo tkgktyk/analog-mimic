@@ -3,7 +3,7 @@
  * @file    mimic_dsp.c
  * @author  TAKAGI Katsuyuki
  * @brief   Implementation of the Core Emulation Engines, Q15 Fixed-Point DSP 
- * Routines, and Deterministic Operational Mode Execution Blocks.
+ *          Routines, and Deterministic Operational Mode Execution Blocks.
  *-----------------------------------------------------------------------------
  * Copyright (C) 2026 TAKAGI Katsuyuki
  *
@@ -27,6 +27,9 @@
 #include "mimic0x_msp.h"
 #include <string.h>
 
+// =========================================================
+// Deterministic Output Slot (Shared between ISR and DMA)
+// =========================================================
 static volatile uint32_t mimic_output_slot = MIMIC_ADC_MID_VALUE;
 
 // =========================================================
@@ -68,29 +71,25 @@ static const int32_t lut_antilog[65] = {
 };
 
 // =========================================================
-// 1. DSP Internal State Variables (Promoted to 32-bit)
+// 1. DSP Internal State Variables (Exclusive to Sampling ISR)
 // =========================================================
+// Note: 'volatile' is omitted on internal DSP states because the sampling engine
+// is strictly stopped before MimicDSP_UpdateParameters() modifies them from Main.
 
-// Pipeline context structure.
-// Placing 32-bit variables at the top to eliminate alignment padding gaps.
 typedef struct {
-    int32_t out_mult_q15;     // Signed Q15 multiplier
-    int32_t out_offset_calc;  // Final computed offset including inversion
-    uint8_t current_mode;
+    int32_t            out_mult_q15;    // Signed Q15 multiplier
+    int32_t            out_offset_calc; // Final computed offset including inversion
+    uint8_t            current_mode;
     MimicOutputRoute_t output_route;
-    uint8_t global_flags;
-    // 2 bytes of implicit padding will be automatically inserted here by the compiler
+    uint8_t            global_flags;
 } MimicPipeline_t;
 
-// Exactly one instance allocated in static memory
 static MimicPipeline_t pipeline;
 
 #define DELAY_BUFFER_SIZE 4096
 #define DELAY_BUFFER_MASK (DELAY_BUFFER_SIZE - 1)
 static uint16_t delay_buffer[DELAY_BUFFER_SIZE] = {0};
 
-// For non-linear LUT: kept outside the union context to allow safe dynamic pointer 
-// switching of the active LUT across different operational modes.
 static uint8_t nonlinear_lut_type = MIMIC_LUT_LOG;
 static const int32_t *active_lut_ptr = lut_log;
 
@@ -98,59 +97,50 @@ static const int32_t *active_lut_ptr = lut_log;
 // Complete DSP Mode-Specific Contexts (Unified Structs)
 // =========================================================
 
-// --- 1st Order Filter (LPF/HPF) ---
 typedef struct {
     int32_t alpha_q15;       // Config
     int32_t accum;           // State
 } Filter1st_t;
 
-// --- Biquad Filter (DF2T) ---
 typedef struct {
     int32_t b0, b1, b2;      // Config
     int32_t a1, a2;          // Config
     int32_t s1, s2;          // State
 } Biquad_t;
 
-// --- Programmable Gain Amplifier (PGA) ---
 typedef struct {
     int32_t gain_fract_q15;  // Config
     int32_t gain_shift;      // Config
     int32_t offset_q15;      // Config
 } Pga_t;
 
-// --- Window / Schmitt Comparators ---
 typedef struct {
     int32_t upper;           // Config
     int32_t lower;           // Config
     int32_t wave_last_raw;   // State
 } Comparator_t;
 
-// --- Math (Derivative / Integral) / Slew Rate Limiter ---
 typedef struct {
     int32_t scale_fract_q15; // Config
     int32_t scale_shift;     // Config (Derivative/Integral only)
     int32_t last_q15;        // State
 } Math_t;
 
-// --- Clipper ---
 typedef struct {
     int32_t upper;           // Config
     int32_t lower;           // Config
 } Clipper_t;
 
-// --- Envelope Follower ---
 typedef struct {
     int32_t decay_q15;       // Config
     uint8_t polarity;        // Config
     int32_t last_q15;        // State
 } Envelope_t;
 
-// --- Full Wave Rectifier ---
 typedef struct {
     int32_t vref_raw;        // Config
 } Rectifier_t;
 
-// --- Sample and Hold ---
 typedef struct {
     uint32_t period_samples; // Config
     uint32_t track_samples;  // Config
@@ -158,15 +148,11 @@ typedef struct {
     int32_t  last_q15;       // State
 } SampleHold_t;
 
-// --- Digital Delay ---
 typedef struct {
     uint32_t delay_samples;   // Config
     uint32_t delay_write_ptr; // State
 } Delay_t;
 
-// =========================================================
-// Core Context: Merging all independent mode states into a single union
-// =========================================================
 typedef union {
     Filter1st_t  filter1st;
     Biquad_t     bq;
@@ -180,26 +166,19 @@ typedef union {
     Delay_t      delay;
 } DSPContext_u;
 
-// Exactly one instance of this context is allocated in RAM.
-// The total footprint is fixed to the size of the largest member (Biquad_t = 28 bytes).
 static DSPContext_u dsp_ctx;
 
 // =========================================================================
-// Static State Variables (Promoted to native 32-bit for maximum speed)
+// Decimation & Interpolation State Variables (Promoted to native 32-bit)
 // =========================================================================
-// mask = 2^N-1, shift = N
-// mask = 0, shift = 0 : Native 192kHz mode (Decimation OFF)
-// mask = 1023, shift = 10 : 1024x Decimation (187.5Hz mode)
-static uint32_t decimation_mask = 0;
-static uint32_t decimation_shift = 0;
-static uint32_t adc_accumulator = 0;
-static uint32_t decimation_count = 0;
+static uint32_t decimation_mask     = 0;
+static uint32_t decimation_shift    = 0;
+static uint32_t adc_accumulator     = 0;
+static uint32_t decimation_count    = 0;
 
-// DSP result variables are also kept as signed 32-bit (int32_t) from the start 
-// to eliminate casting overhead during subtraction and bit-shifting.
-static int32_t  y_old = MIMIC_ADC_MID_VALUE;
-static int32_t  y_new = MIMIC_ADC_MID_VALUE;
-static int32_t  delta_step_q16 = 0;
+static int32_t  y_old               = MIMIC_ADC_MID_VALUE;
+static int32_t  y_new               = MIMIC_ADC_MID_VALUE;
+static int32_t  delta_step_q16      = 0;
 static int32_t  current_dac_val_q16 = (MIMIC_ADC_MID_VALUE << Q16_SHIFT);
 
 // =========================================================
@@ -212,6 +191,12 @@ static inline __attribute__((always_inline)) int32_t RawToQ15(int32_t raw) {
 
 static inline __attribute__((always_inline)) int32_t Q15ToRaw(int32_t q15) {
     return (q15 >> Q15_SHIFT) + MIMIC_ADC_MID_VALUE;
+}
+
+static inline __attribute__((always_inline)) uint32_t MuxDacGpio(uint32_t result) {
+    return (pipeline.output_route == MIMIC_OUT_DIGITAL)
+         ? ((uint32_t)OPA2_INN_PIN << (result >= MIMIC_ADC_MID_VALUE ? 0u : 16u))
+         : result;
 }
 
 // =========================================================
@@ -241,26 +226,15 @@ static inline __attribute__((always_inline)) int32_t ProcessBiquadFilter(int32_t
 
     int32_t x0 = adc_val - MIMIC_ADC_MID_VALUE;
     
-    // 1. Calculate y0
     int32_t acc = p->b0 * x0 + p->s1;
     int32_t y0 = (acc + BIQUAD_ROUND_VAL) >> BIQUAD_SHIFT;
     
-    // 2. Calculate error and reuse register
-    // Since 'acc' is no longer needed for its original purpose, we reuse it 
-    // directly as 'err' to save one CPU register allocation.
     acc -= (y0 << BIQUAD_SHIFT); 
-
-    // 3. Compute the next s1 state sequentially
-    // Instead of using a single complex expression, operations are serialized to guide 
-    // the compiler to consume and release registers efficiently, avoiding simultaneous 
-    // loads of b1, a1, and s2.
     acc += p->s2;
     acc += p->b1 * x0;
     acc += p->a1 * y0;
-    p->s1 = acc; // Write back to memory immediately upon calculation completion
+    p->s1 = acc;
 
-    // 4. Compute the next s2 state
-    // Registers are fully freed up now that s1 has been written back to memory.
     p->s2 = p->b2 * x0 + p->a2 * y0;
 
     return y0 + MIMIC_ADC_MID_VALUE; 
@@ -317,21 +291,16 @@ static inline __attribute__((always_inline)) int32_t ProcessClipper(int32_t adc_
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessNonlinearLut(int32_t adc_val) {
-    // 1. Direct pointer loading eliminates standard if-else branching penalties
     const int32_t *lut = active_lut_ptr;
 
-    // 2. Fragment calculation
     int32_t index = adc_val >> LUT_INDEX_SHIFT;
     int32_t frac = adc_val & LUT_FRAC_MASK;
 
-    // 3. Optimize memory access utilizing explicit compiler offset addressing
     const int32_t *p = &lut[index];
     int32_t y0 = p[0];
     int32_t y1 = p[1];
 
-    // 4. Interpolate leveraging Cortex-M0+ single-cycle multiplier (MULS)
     int32_t interpolated = y0 + (((y1 - y0) * frac) >> LUT_INDEX_SHIFT);
-    
     return Q15ToRaw(interpolated);
 }
 
@@ -342,10 +311,7 @@ static inline __attribute__((always_inline)) int32_t ProcessMathDerivative(int32
     int32_t diff = in_q15 - p->last_q15;
     p->last_q15 = in_q15;
 
-    // 1. Apply scale to difference (mantissa multiplication)
     int32_t diff_mult = (diff * p->scale_fract_q15) >> FRACTIONAL_BITS_Q15;
-    
-    // 2. Apply final gain (exponent shift)
     int32_t s = p->scale_shift;
     int32_t out_q15 = (s >= 0) ? (diff_mult << s) : (diff_mult >> -s);
     
@@ -356,17 +322,11 @@ static inline __attribute__((always_inline)) int32_t ProcessMathIntegral(int32_t
     Math_t *p = &dsp_ctx.math;
 
     int32_t in_q15 = RawToQ15(adc_val);
-
-    // 1. Attenuate history (mantissa multiplication)
     int32_t history_leaked = (p->last_q15 * p->scale_fract_q15) >> FRACTIONAL_BITS_Q15;
 
-    // 2. Input scaling (exponent shift)
-    // Using a ternary operator helps the compiler optimize to conditional 
-    // execution instructions rather than pipeline-flushing branches.
     int32_t s = p->scale_shift;
     int32_t input_scaled = (s >= 0) ? (in_q15 << s) : (in_q15 >> -s);
 
-    // 3. Accumulate and output
     p->last_q15 = history_leaked + input_scaled;
     return Q15ToRaw(p->last_q15);
 }
@@ -377,19 +337,11 @@ static inline __attribute__((always_inline)) int32_t ProcessSlewRateLimiter(int3
     int32_t in_q15 = RawToQ15(adc_val);
     int32_t diff = in_q15 - p->last_q15;
 
-    // Mathematical clamping to suppress standard runtime branch penalties.
-    // Limits the rate of change (diff) strictly within the bounds of the threshold.
     int32_t clamped_diff = diff;
     if (clamped_diff > p->scale_fract_q15)  clamped_diff = p->scale_fract_q15;
     if (clamped_diff < -p->scale_fract_q15) clamped_diff = -p->scale_fract_q15;
     
-    // Modern GCC compilers automatically translate these distinct conditional statements 
-    // into branchless assembly instructions (e.g., conditional execution or selection loops), 
-    // completely avoiding heavy pipeline-flushing jumps on architectures like Cortex-M0+.
-
-    // Safely advance the accumulation historical state using the rate-limited delta
     p->last_q15 += clamped_diff;
-
     return Q15ToRaw(p->last_q15);
 }
 
@@ -410,7 +362,6 @@ static inline __attribute__((always_inline)) int32_t ProcessSampleAndHold(int32_
     return Q15ToRaw(p->last_q15);
 }
 
-// Dedicated Mode Processing Function for Digital Delay
 static inline __attribute__((always_inline)) int32_t ProcessDelay(int32_t adc_val) {
     Delay_t *p = &dsp_ctx.delay;
 
@@ -425,21 +376,22 @@ static inline __attribute__((always_inline)) int32_t ProcessDelay(int32_t adc_va
 // =========================================================
 // Initialization and Parameter Updates
 // =========================================================
+
 void MimicDSP_Init(void) {
-    pipeline.current_mode = MIMIC_MODE_ID_BYPASS_DSP;
-    pipeline.output_route = MIMIC_OUT_ANALOG;
-    //pipeline.output_route = MIMIC_OUT_DIGITAL;
-    pipeline.global_flags = 0;
-    pipeline.out_mult_q15 = 1 << FRACTIONAL_BITS_Q15;
+    pipeline.current_mode    = MIMIC_MODE_ID_BYPASS_DSP;
+    pipeline.output_route    = MIMIC_OUT_OPEN;
+    pipeline.global_flags    = 0;
+    pipeline.out_mult_q15    = 1 << FRACTIONAL_BITS_Q15;
     pipeline.out_offset_calc = 0;
 
     memset((void*)&dsp_ctx, 0, sizeof(dsp_ctx));
     dsp_ctx.comp.wave_last_raw = MIMIC_ADC_MID_VALUE;
+
+    mimic_output_slot = MIMIC_ADC_MID_VALUE;
 }
 
-void *MimicDSP_GetOutputSlot(void)
-{
-    return (void *)&mimic_output_slot;
+volatile uint32_t *MimicDSP_GetOutputSlot(void) {
+    return &mimic_output_slot;
 }
 
 static inline __attribute__((always_inline)) uint16_t ParseU16(const uint8_t *p) {
@@ -457,26 +409,24 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
     pipeline.current_mode = config->mode_id;
     pipeline.output_route = config->output_route;
 
-    // --- Global Parameters ---
+    // 2. Global Decimation & Offset Parameters
     MimicDSP_SetDecimation(config->decimation_n);
 
-    // Pre-calculate inversion and offsets
     if (pipeline.global_flags & MIMIC_FLAG_INV_OUT) {
-        pipeline.out_mult_q15 = -config->gain_q15;
+        pipeline.out_mult_q15    = -config->gain_q15;
         pipeline.out_offset_calc = MIMIC_ADC_MAX_VALUE - config->offset_raw; 
     } else {
-        pipeline.out_mult_q15 = config->gain_q15; 
+        pipeline.out_mult_q15    = config->gain_q15; 
         pipeline.out_offset_calc = config->offset_raw;
     }
 
-    // Completely reset the memory region (parameters + states) at once when the mode is switched.
+    // 3. Reset mode-specific state history upon mode transition
     if (pipeline.current_mode != previous_mode) {
         memset((void*)&dsp_ctx, 0, sizeof(dsp_ctx));
-        // Exception handling: explicitly set default values for fields requiring non-zero initialization
         dsp_ctx.comp.wave_last_raw = MIMIC_ADC_MID_VALUE;
     }
 
-    // --- Mode Specific Parameters (Successfully Unified into dsp_ctx) ---
+    // 4. Parse Mode-Specific Payload
     const uint8_t *p = config->payload;
     switch (pipeline.current_mode) {
         case MIMIC_MODE_ID_FILTER_BIQUAD:
@@ -493,9 +443,9 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
             break;
 
         case MIMIC_MODE_ID_PGA:
-            dsp_ctx.pga.gain_fract_q15  = ParseS16(p + 0);
-            dsp_ctx.pga.gain_shift      = (int8_t)*(p + 2);
-            dsp_ctx.pga.offset_q15      = RawToQ15(ParseS16(p + 3));
+            dsp_ctx.pga.gain_fract_q15 = ParseS16(p + 0);
+            dsp_ctx.pga.gain_shift     = (int8_t)*(p + 2);
+            dsp_ctx.pga.offset_q15     = RawToQ15(ParseS16(p + 3));
             break;
 
         case MIMIC_MODE_ID_COMPARATOR_WIN:
@@ -511,7 +461,6 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
             break;
 
         case MIMIC_MODE_ID_SLEW_RATE_LIMITER:
-            // Slew Rate Limiter smartly reuses the Math structure for its parameter layout
             dsp_ctx.math.scale_fract_q15 = ParseS16(p + 0);
             break;
 
@@ -521,7 +470,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
             break;
 
         case MIMIC_MODE_ID_NONLINEAR_LUT:
-            nonlinear_lut_type = (int8_t)*(p + 0);
+            nonlinear_lut_type = (uint8_t)*(p + 0);
             switch (nonlinear_lut_type) {
                 case MIMIC_LUT_LOG:     active_lut_ptr = lut_log; break;
                 case MIMIC_LUT_ANTILOG: active_lut_ptr = lut_antilog; break;
@@ -530,7 +479,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
 
         case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:
             dsp_ctx.envelope.decay_q15 = ParseS16(p + 0);
-            dsp_ctx.envelope.polarity  = (int8_t)*(p + 2);
+            dsp_ctx.envelope.polarity  = (uint8_t)*(p + 2);
             break;
 
         case MIMIC_MODE_ID_RECTIFIER_FULL:
@@ -555,12 +504,9 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
 // 3. The Main DSP Pipeline 
 // =========================================================
 __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample(uint16_t adc_val) {
-    // Cast to remove volatile qualifier, allowing the compiler to perform full register optimization.
     MimicPipeline_t *pipe = &pipeline;
-
     int32_t dsp_out = 0;
 
-    // 2. Mode-Specific DSP Core Engine
     if (pipe->current_mode == MIMIC_MODE_ID_FILTER_BIQUAD) {
         dsp_out = ProcessBiquadFilter(adc_val);
     } else {
@@ -568,7 +514,6 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample(uin
             case MIMIC_MODE_ID_PGA:                 dsp_out = ProcessPga(adc_val); break;
             case MIMIC_MODE_ID_FILTER_1ST_LPF:      dsp_out = ProcessFilterLpf(adc_val); break;
             case MIMIC_MODE_ID_FILTER_1ST_HPF:      dsp_out = ProcessFilterHpf(adc_val); break;
-            //case MIMIC_MODE_ID_FILTER_BIQUAD:       dsp_out = ProcessBiquadFilter(adc_val); break;
             case MIMIC_MODE_ID_COMPARATOR_WIN:      dsp_out = ProcessPrsWindow(adc_val); break;
             case MIMIC_MODE_ID_COMPARATOR_SCHMITT:  dsp_out = ProcessComparatorSchmitt(adc_val); break;
             case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:   dsp_out = ProcessEnvelopeFollower(adc_val); break;
@@ -584,13 +529,21 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample(uin
         }
     }
 
-    // 3. Post-Processing: Branchless inversion and dynamic DC Offset insertion
+    // Post-Processing: Branchless inversion and dynamic DC Offset insertion
     int32_t final_out = ((dsp_out * pipe->out_mult_q15) >> FRACTIONAL_BITS_Q15) + pipe->out_offset_calc;
 
-    // 4. Branchless fixed-point saturation logic (Clips dynamically to 0 - 4095)
+    // Branchless fixed-point saturation logic (Clips dynamically to 0 - 4095)
     if ((uint32_t)final_out > MIMIC_ADC_MAX_VALUE) {
         final_out = (~(final_out >> 31)) & MIMIC_ADC_MAX_VALUE;
     }
+
+#ifdef ENABLE_DAC_PULSE
+    __asm volatile ("" : "+r" (final_out));
+
+    static uint16_t dac_pulse = MIMIC_ADC_MIN_VALUE;
+    dac_pulse = (dac_pulse < MIMIC_ADC_MID_VALUE) ? MIMIC_ADC_MAX_VALUE : MIMIC_ADC_MIN_VALUE;
+    final_out = dac_pulse;
+#endif
 
     return (uint16_t)final_out;
 }
@@ -605,29 +558,21 @@ void MimicDSP_SetDecimation(uint8_t decimation_n) {
     decimation_mask  = new_mask;
     decimation_shift = decimation_n;
 
-    // Safely reset internal DSP states (buffers and slopes)
-    adc_accumulator = 0;
-    decimation_count = 0;
-    
-    y_old = MIMIC_ADC_MID_VALUE;
-    y_new = MIMIC_ADC_MID_VALUE;
-    delta_step_q16 = 0;
+    adc_accumulator     = 0;
+    decimation_count    = 0;
+    y_old               = MIMIC_ADC_MID_VALUE;
+    y_new               = MIMIC_ADC_MID_VALUE;
+    delta_step_q16      = 0;
     current_dac_val_q16 = (MIMIC_ADC_MID_VALUE << Q16_SHIFT);
 }
 
 // Configuration for Test and Debug Features
 #define ENABLE_DSP_PROFILING
 
-static inline __attribute__((always_inline))
-uint32_t MuxDacGpio(uint32_t result) {
-    return (pipeline.output_route == MIMIC_OUT_DIGITAL) ? (MIMIC_OUTPUT_PIN << (result >= MIMIC_ADC_MID_VALUE ? 0u : 16u)): result;
-}
-
-static inline __attribute__((always_inline))
-void SampleBody() {
+static inline __attribute__((always_inline)) void SampleBody(void) {
 #ifdef ENABLE_HEARTBEAT
     static volatile uint32_t mimic_tc_count = 0;
-    if (++mimic_tc_count >= 100000u) {      /* 200 kHz なら 0.5 秒 */
+    if (++mimic_tc_count >= 100000u) {      /* 0.5 sec at 200 kHz */
         mimic_tc_count = 0;
         GPIOF->ODR ^= GPIO_PIN_6;
     }
@@ -637,9 +582,7 @@ void SampleBody() {
 #endif
 
     // =========================================================================
-    // 2. ADC Data Read
-    // Reading the DR register automatically clears the EOC flag in hardware.
-    // Condition checks on SR are omitted since EOC is the sole active source.
+    // 2. ADC Data Read (Automatically clears hardware EOC flag)
     // =========================================================================
     uint32_t raw_val = ADC1->DR;
 
@@ -650,77 +593,46 @@ void SampleBody() {
         MimicDevice_SetErrorFlag_ISR(MIMIC_STATUS_SIGNAL_SATURATION);
     }
 
+    // =========================================================================
+    // 4. DSP Processing & Output Slot Preloading for Next Cycle
+    // =========================================================================
+    uint32_t out_raw;
+
     if (decimation_mask == 0) {
         MimicDevice_SetAdcVal_ISR(raw_val);
-
-        // =========================================================================
-        // 4. DSP Processing & Preloading DAC Holding Register for the Next Cycle
-        // =========================================================================
-        uint32_t result = MimicDSP_ProcessSample(raw_val);
-        mimic_output_slot = MuxDacGpio(result);      /* DMA/CPU-GPIO */
-#ifdef MIMIC_ENGINE_CPU
-        DAC1->DHR12R1 = result;          /* CPU-DAC */
-#endif
+        out_raw = MimicDSP_ProcessSample(raw_val);
     } else {
-        // [DECIMATION & INTERPOLATION PATH]
-        // 32-bit native calculation (no casting required, maximum speed)
         adc_accumulator += raw_val;
         decimation_count++;
 
         current_dac_val_q16 += delta_step_q16;
-        mimic_output_slot = MuxDacGpio(current_dac_val_q16);      /* DMA/CPU-GPIO */
-#ifdef MIMIC_ENGINE_CPU
-        DAC1->DHR12R1 = current_dac_val_q16;          /* CPU-DAC */
-#endif
+        out_raw = (uint32_t)(current_dac_val_q16 >> Q16_SHIFT);
 
         if ((decimation_count & decimation_mask) == 0) {
-            
-            // Keep shifted result as 32-bit
             uint32_t x_in = adc_accumulator >> decimation_shift;
             MimicDevice_SetAdcVal_ISR(x_in); 
 
             y_old = y_new;
             y_new = MimicDSP_ProcessSample(x_in);
 
-            // [Micro-Optimization]
-            // Since both operands are int32_t, absolutely no casting is required.
-            // The C compiler will emit pure 'SUB' and 'LSL' instructions.
             int32_t diff_q16 = (y_new - y_old) << Q16_SHIFT;
             delta_step_q16 = diff_q16 >> decimation_shift;
 
             current_dac_val_q16 = y_old << Q16_SHIFT;
-            
             adc_accumulator = 0;
         }
     }
 
-#ifdef ENABLE_DAC_PULSE
-    /*
-    * ENABLE_DAC_PULSE — bring-up / hardware-debug only. NOT for normal operation.
-    *
-    * When defined, the ISR overwrites DHR12R1 at its tail with a square wave,
-    * discarding the DSP result for that sample. Use it to verify the DAC output
-    * path (pin, buffer, SWTRIGR timing) on a scope in isolation.
-    *
-    * Mutually exclusive with real DSP output: the two write the same register.
-    * Enabled solely via the dedicated `make dac` target, which forces a full
-    * rebuild into the standard output name, so never ship a `make dac` artifact.
-    */
-    static uint32_t dac_pulse = MIMIC_ADC_MIN_VALUE;
-    dac_pulse = (dac_pulse < MIMIC_ADC_MID_VALUE) ? MIMIC_ADC_MAX_VALUE : MIMIC_ADC_MIN_VALUE;
-    mimic_output_slot = MuxDacGpio(dac_pulse);      /* DMA/CPU-GPIO */
+    mimic_output_slot = MuxDacGpio(out_raw);
 #ifdef MIMIC_ENGINE_CPU
-    DAC1->DHR12R1 = dac_pulse;          /* CPU-DAC */
-#endif
+    DAC1->DHR12R1 = out_raw;
 #endif
 
     // =========================================================================
-    // 5. Exception (Overrun) Checking 
-    // Defer to the end of the ISR as this condition occurs with extreme rarity.
+    // 5. Exception (Overrun) Checking
     // =========================================================================
     if (ADC1->SR & ADC_SR_OVER) {
         MimicDevice_SetErrorFlag_ISR(MIMIC_STATUS_ADC_OVER_ERR);
-        // Clear flag directly via peripheral register instead of HAL macro
         ADC1->SR = ADC_SR_OVER; 
     }
 
@@ -736,45 +648,43 @@ void SampleBody() {
 #endif
 }
 
+// =========================================================
+// Deterministic Interrupt Service Routines (.ramfunc)
+// =========================================================
+
 #ifdef MIMIC_ENGINE_DMA
 __attribute__((section(".ramfunc")))
 void DMA1_Channel1_IRQHandler(void)
 {
-    DMA1->IFCR = DMA_FLAG_TC1;    /* TC フラグクリア */
-    SampleBody();              /* 出力は既に完了している */
+    DMA1->IFCR = DMA_FLAG_TC1;    /* Clear DMA Transfer Complete flag */
+    SampleBody();                 /* Hardware output transfer has already completed */
 }
 #endif
+
 #ifdef MIMIC_ENGINE_CPU
 /**
- * @brief ADC and Comparator Interrupt Handler for DAC
+ * @brief ADC and Comparator Interrupt Handler for Analog DAC Route
  */
 __attribute__((used, section(".ramfunc")))
 void ADC_COMP_IRQHandler_DAC(void) {
-    // =========================================================================
-    // 1. [CRITICAL] DAC Output Trigger (Guarantees absolute time determinism)
-    // Fire immediately upon ISR entry without any branching or variable loads
-    // to minimize jitter. Bypasses 'hdac1.Instance' pointer redirection by
-    // accessing the DAC macro definition directly.
-    // =========================================================================
+    // 1. [CRITICAL] DAC Output Trigger (Guarantees zero-jitter time determinism)
     DAC1->SWTRIGR = 1;
     SampleBody();
 }
 
 /**
- * @brief ADC and Comparator Interrupt Handler for GPIO
+ * @brief ADC and Comparator Interrupt Handler for Digital GPIO Route
  */
 __attribute__((used, section(".ramfunc")))
 void ADC_COMP_IRQHandler_GPIO(void) {
-    // =========================================================================
-    // 1. [CRITICAL] DAC Output Trigger (Guarantees absolute time determinism)
-    // Fire immediately upon ISR entry without any branching or variable loads
-    // to minimize jitter. Bypasses 'hdac1.Instance' pointer redirection by
-    // accessing the DAC macro definition directly.
-    // =========================================================================
-    MIMIC_OUTPUT_PORT->BSRR = mimic_output_slot;
+    // 1. [CRITICAL] GPIO Output Trigger (Guarantees zero-jitter time determinism)
+    OPA2_PORT->BSRR = mimic_output_slot;
     SampleBody();
 }
 
+/**
+ * @brief ADC and Comparator Interrupt Handler for Open (High-Z) Route
+ */
 __attribute__((used, section(".ramfunc")))
 void ADC_COMP_IRQHandler(void) {
     SampleBody();

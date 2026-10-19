@@ -26,7 +26,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "mimic_registers.h"
-#include "mimic_device.h"
+#include "mimic0x_msp.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,16 +41,16 @@ extern "C" {
 /**
  * @brief Encapsulates the complete configuration state required by the DSP core.
  * @note  Members are ordered by data size (32-bit first, then 8-bit) to minimize 
- * implicit compiler memory padding and optimize alignment.
+ *        implicit compiler memory padding and optimize alignment.
  */
 typedef struct {
-    int32_t gain_q15;                           /**< Global Q15 fractional gain multiplier */
-    int32_t offset_raw;                         /**< Global output raw DC offset */
-    uint8_t mode_id;                            /**< Active operational mode ID */
-    MimicOutputRoute_t output_route;
-    uint8_t global_flags;                       /**< System-wide control flags (e.g., inversion, mute) */
-    uint8_t decimation_n;                       /**< Decimation shift factor (N) for sample rate reduction */
-    uint8_t payload[MIMIC_DSP_PAYLOAD_SIZE];    /**< Mode-specific parameter payload data */
+    int32_t            gain_q15;                        /**< Global Q15 fractional gain multiplier */
+    int32_t            offset_raw;                      /**< Global output raw DC offset */
+    uint8_t            mode_id;                         /**< Active operational mode ID */
+    MimicOutputRoute_t output_route;                    /**< Physical output path (OPEN, ANALOG, DIGITAL) */
+    uint8_t            global_flags;                    /**< System-wide control flags (e.g., inversion, test pulse) */
+    uint8_t            decimation_n;                    /**< Decimation shift factor (N) for sample rate reduction */
+    uint8_t            payload[MIMIC_DSP_PAYLOAD_SIZE]; /**< Mode-specific parameter payload data */
 } MimicDSP_Config_t;
 
 // =========================================================
@@ -59,23 +59,26 @@ typedef struct {
 
 /**
  * @brief  Initializes the DSP core memory space and internal state variables.
- * @note   Clears biquad delay lines and resets tracking waveform latches to their defaults.
  */
 void MimicDSP_Init(void);
 
-void *MimicDSP_GetOutputSlot(void);
+/**
+ * @brief  Returns the memory address of the 32-bit deterministic output slot.
+ * @note   Used exclusively by the hardware engine to bind the DMA source pointer.
+ *         Initial slot values are managed internally by MimicDSP_UpdateParameters().
+ */
+volatile uint32_t *MimicDSP_GetOutputSlot(void);
 
 /**
  * @brief  Configures the internal oversampling decimation filter.
  * @param  decimation_n The decimation shift factor (2^n). 0 disables decimation.
- * @note   This function safely resets accumulation buffers to prevent phase jumps.
  */
 void MimicDSP_SetDecimation(uint8_t decimation_n);
 
 /**
- * @brief  Updates the DSP mathematical parameters safely and switches operational modes.
+ * @brief  Updates the DSP mathematical parameters safely, switches operational modes,
+ *         and seeds the output slot according to the target output route.
  * @param  config Pointer to the newly constructed DSP configuration context.
- * @note   Memory blocks specific to modes are zero-initialized dynamically upon a mode change.
  */
 void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config);
 

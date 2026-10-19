@@ -128,7 +128,7 @@
 #define MIMIC_FLAG_OUT_OPEN               (1 << 6) // Enforces high-impedance OPEN state (Bypasses core pipeline)
 
 // MIMIC_SERIES_1X Exclusive Controls
-#define MIMIC_FLAG_SERVO_EN               (1 << 5) // Valid only for 1x series hardware architectures
+#define MIMIC_FLAG_SERVO_EN               (1 << 4) // Valid only for 1x series hardware architectures (Reserved)
 
 
 // =========================================================
