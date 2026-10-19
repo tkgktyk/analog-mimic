@@ -24,9 +24,6 @@
 #ifndef MIMIC_I2C_H
 #define MIMIC_I2C_H
 
-#include <stdint.h>
-#include <stdbool.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif

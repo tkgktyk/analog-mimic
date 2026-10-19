@@ -24,7 +24,6 @@
 #define MIMIC_DSP_H
 
 #include <stdint.h>
-#include <stdbool.h>
 #include "mimic_registers.h"
 #include "mimic0x_msp.h"
 

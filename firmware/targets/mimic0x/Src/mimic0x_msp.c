@@ -23,7 +23,6 @@
  */
 
 #include "mimic0x_msp.h"
-#include "py32f0xx_hal.h"
 #include "py32f071_ll_i2c.h"
 #include "mimic_registers.h"
 

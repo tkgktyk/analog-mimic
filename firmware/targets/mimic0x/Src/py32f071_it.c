@@ -31,9 +31,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "py32f071_it.h"
 #include "py32f0xx_hal.h"
-#include "mimic_device.h"
-#include "mimic_dsp.h"
-#include "mimic_i2c.h"
 
 /******************************************************************************/
 /* Cortex-M0+ Processor Interruption and Exception Handlers                  */

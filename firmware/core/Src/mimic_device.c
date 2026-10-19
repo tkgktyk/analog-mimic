@@ -24,7 +24,6 @@
 #include "mimic_device.h"
 #include <string.h>
 #include "py32f0xx_hal.h"
-#include "mimic0x_msp.h"
 #include "mimic_flash.h"
 #include "mimic_dsp.h"
 #include "mimic_i2c.h"
@@ -168,6 +167,7 @@ void MimicDevice_SetStatusFlag(uint8_t flag)
         mimic_device.status |= flag;
     );
 }
+
 
 uint8_t MimicDevice_GetAndClearStatusFlag(void)
 {

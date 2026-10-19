@@ -24,7 +24,6 @@
 #include "mimic_dsp.h"
 #include "py32f0xx_hal.h"
 #include "mimic_device.h"
-#include "mimic0x_msp.h"
 #include <string.h>
 
 // =========================================================

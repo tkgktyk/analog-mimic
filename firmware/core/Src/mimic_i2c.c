@@ -22,7 +22,6 @@
  */
 
 #include "mimic_i2c.h"
-#include "py32f0xx_hal.h"
 #include "py32f071_ll_i2c.h"
 #include "mimic_device.h"
 

@@ -22,8 +22,6 @@
  */
 
 #include "py32f0xx_hal.h"
-#include "mimic0x_msp.h"
-#include "mimic_registers.h"
 #include "mimic_device.h"
 
 // =========================================================
