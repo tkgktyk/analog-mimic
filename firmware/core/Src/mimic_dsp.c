@@ -49,7 +49,13 @@ static volatile uint32_t mimic_output_slot = MIMIC_ADC_MID_VALUE;
 // =========================================================
 // Look-Up Tables (LUT)
 // =========================================================
-static const int32_t lut_log[65] = {
+// Placed in SRAM (.data.lut) to guarantee zero-wait-state deterministic access at 72MHz.
+// Note: 'const' is intentionally omitted on the array definition to prevent GCC section 
+// attribute conflicts with executable/writable SRAM sections, while read-only access is 
+// strictly enforced via the 'const int32_t *active_lut_ptr' pointer.
+#define MIMIC_SRAM_LUT __attribute__((section(".data.lut")))
+
+MIMIC_SRAM_LUT static int32_t lut_log[65] = {
     -32768, -25000, -20000, -16000, -13000, -10500, -8500, -6800, -5300, -4000,
     -2800, -1700, -700, 200, 1000, 1800, 2500, 3200, 3800, 4400,
     4900, 5400, 5900, 6300, 6700, 7100, 7500, 7800, 8100, 8400,
@@ -59,7 +65,7 @@ static const int32_t lut_log[65] = {
     13900, 14000, 14100, 14200, 14300
 };
 
-static const int32_t lut_antilog[65] = {
+MIMIC_SRAM_LUT static int32_t lut_antilog[65] = {
     -32768, -31768, -30000, -27000, -23000, -18000, -12000, -5000, 2000, 8000,
     13000, 17000, 20000, 22500, 24500, 26000, 27300, 28400, 29300, 30000,
     30600, 31100, 31500, 31800, 32100, 32300, 32500, 32600, 32700, 32767,
@@ -423,6 +429,12 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
     if (pipeline.current_mode != previous_mode) {
         memset((void*)&dsp_ctx, 0, sizeof(dsp_ctx));
         dsp_ctx.comp.wave_last_raw = MIMIC_ADC_MID_VALUE;
+
+        if (pipeline.current_mode == MIMIC_MODE_ID_DELAY) {
+            for (uint32_t i = 0; i < DELAY_BUFFER_SIZE; i++) {
+                delay_buffer[i] = MIMIC_ADC_MID_VALUE;
+            }
+        }
     }
 
     // 4. Parse Mode-Specific Payload
