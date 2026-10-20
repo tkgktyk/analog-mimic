@@ -768,16 +768,16 @@
       {
         "filename": "mimic01.kicad_sch",
         "name": "mimic01",
-        "uuid": "00000000-0000-0000-0000-000000000000"
+        "uuid": "81d4f99a-e1be-4b43-a72c-4e3cf645dbd8"
       }
     ],
-    "used_designators": "",
+    "used_designators": "R3,R15,#PWR31,#PWR33,#PWR35,C10",
     "variants": []
   },
   "sheets": [
     [
       "81d4f99a-e1be-4b43-a72c-4e3cf645dbd8",
-      "Root"
+      "mimic01"
     ]
   ],
   "text_variables": {},
