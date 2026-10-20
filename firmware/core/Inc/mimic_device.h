@@ -27,7 +27,6 @@
 #include <stdbool.h>
 
 #include "mimic_registers.h"
-#include "mimic0x_msp.h"
 
 #ifdef __cplusplus
 extern "C" {
