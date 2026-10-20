@@ -16,12 +16,11 @@ idea.md
 *.bck
 *.kicad_pcb-bak
 *.kicad_sch-bak
+*.kicad_prl
 *backups/
 _autosave-*
 *fp-info-cache
-~*.lck
 *.lck
-/hardware/mimic0x/mimic0x/**/*.pro
 
 /hardware/mimic0x/**/*.net
 /hardware/mimic0x/**/*.ipc
