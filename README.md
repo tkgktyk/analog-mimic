@@ -26,6 +26,8 @@ graph LR
     style PY32F071 fill:#e6f2ff,stroke:#0066cc,stroke-width:2px,stroke-dasharray:5 5
 ```
 
+![Analog Mimic concept](hardware/assembly/mimic01_20260522/mimic_concept.svg)
+
 ## Overview
 Analog Mimic is a drop-in, programmable analog front-end (AFE) module powered by a robust "MCU + DSP" architecture. It is designed to bring software-defined flexibility to physical analog boundaries.
 
