@@ -2,30 +2,6 @@
 
 ![Analog Mimic01](hardware/assembly/mimic01_20260522/mimic01_photo.jpg)
 
-```mermaid
-graph LR
-    classDef plain fill:none,stroke:none,color:#000,font-weight:bold;
-    classDef mcu fill:#f9f9f9,stroke:#333,stroke-width:1px;
-
-    AIN(AIN):::plain
-    AOUT(AOUT):::plain
-
-    AIN --> ADC
-    
-    %% Subgraph for MCU
-    subgraph PY32F071[PY32F071]
-        ADC[Buffer/AAF/ADC]
-        DSP[DSP<br>Analog emulator]
-        DAC[DAC/AIF]
-        
-        ADC --> DSP --> DAC
-    end
-
-    DAC --> AOUT
-
-    style PY32F071 fill:#e6f2ff,stroke:#0066cc,stroke-width:2px,stroke-dasharray:5 5
-```
-
 ![Analog Mimic concept](hardware/assembly/mimic01_20260522/mimic_concept.svg)
 
 ## Overview
@@ -68,6 +44,30 @@ prototyping and have not yet worked with analog signal chains.
 * **On-Chip Integration:** Seamless integration of internal operational amplifier-based input/output buffers, anti-aliasing filters (AAF), and anti-imaging filters (AIF) mapped directly alongside the high-speed processing core.
 
 ![Mimic01 Board](hardware/assembly/mimic01_20260522/mimic01.svg)
+
+```mermaid
+graph LR
+    classDef plain fill:none,stroke:none,color:#000,font-weight:bold;
+    classDef mcu fill:#f9f9f9,stroke:#333,stroke-width:1px;
+
+    AIN(AIN):::plain
+    AOUT(AOUT):::plain
+
+    AIN --> ADC
+    
+    %% Subgraph for MCU
+    subgraph PY32F071[PY32F071]
+        ADC[Buffer/AAF/ADC]
+        DSP[DSP<br>Analog emulator]
+        DAC[DAC/AIF]
+        
+        ADC --> DSP --> DAC
+    end
+
+    DAC --> AOUT
+
+    style PY32F071 fill:#e6f2ff,stroke:#0066cc,stroke-width:2px,stroke-dasharray:5 5
+```
 
 ## Software Ecosystem
 To lower the barrier to entry for real-time digital signal processing, we provide a dedicated **C++ library for Arduino**. 
