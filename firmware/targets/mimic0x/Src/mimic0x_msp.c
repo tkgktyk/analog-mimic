@@ -62,6 +62,12 @@
     // LED
     #define READY_LED_PORT  GPIOF
     #define READY_LED_PIN   GPIO_PIN_6
+    
+    // I2C address jumpers (closed = GND, internal pull-ups)
+    #define ADDR_JP_PORT      GPIOB
+    #define ADDR_A0_PIN       GPIO_PIN_3    // PB3 -> address bit 0
+    #define ADDR_A1_PIN       GPIO_PIN_4    // PB4 -> address bit 1
+
   #endif
 #else
   #error "Hardware revision macro is not defined! Please define TARGET_MIMIC00 or TARGET_MIMIC01."
@@ -78,7 +84,7 @@
 #define VECTOR_INDEX(irqn)  (16u + (uint32_t)(irqn))
 
 #define I2C_CLOCK_SPEED_HZ  100000
-#define I2C_SLAVE_ADDRESS   (MIMIC_DEFAULT_I2C_ADDR << 1) // 7-bit address "0x40"
+#define I2C_SLAVE_ADDRESS(offset) ((MIMIC_DEFAULT_I2C_ADDR + (offset)) << 1)  // 7-bit 0x40 - 0x43
 
 // CRITICAL TIMING CONSTRAINT:
 // To prevent starvation of the I2C peripheral and the main loop,
@@ -448,15 +454,41 @@ static void GPIO_Hardware_Init(void)
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOF_CLK_ENABLE();
 
     HAL_GPIO_WritePin(READY_LED_PORT, READY_LED_PIN, GPIO_PIN_RESET);
 
+    /* 1. LED */
     GPIO_InitStruct.Pin   = READY_LED_PIN;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(READY_LED_PORT, &GPIO_InitStruct);
+
+    /* 2. I2C address jumpers: inputs with internal pull-ups */
+    GPIO_InitStruct.Pin   = ADDR_A0_PIN | ADDR_A1_PIN;
+    GPIO_InitStruct.Mode  = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull  = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(ADDR_JP_PORT, &GPIO_InitStruct);
+#endif
+}
+
+/**
+ * @brief  Reads the I2C address jumpers (closed = 1).
+ * @return Offset added to MIMIC_DEFAULT_I2C_ADDR (0 - 3). 0 on boards without jumpers.
+ */
+static uint8_t GetAddressJumpers(void)
+{
+#if defined(TARGET_MIMIC01)
+  HAL_Delay(1);   // pull-ups settle (SysTick is still running at this point)
+  uint8_t offset = 0;
+  if (HAL_GPIO_ReadPin(ADDR_JP_PORT, ADDR_A0_PIN) == GPIO_PIN_RESET) offset |= 0x01;
+  if (HAL_GPIO_ReadPin(ADDR_JP_PORT, ADDR_A1_PIN) == GPIO_PIN_RESET) offset |= 0x02;
+  return offset;
+#else
+  return 0;
 #endif
 }
 
@@ -489,7 +521,7 @@ static void MX_I2C1_Init(void)
     I2C_InitStruct.PeripheralMode  = LL_I2C_MODE_I2C;
     I2C_InitStruct.ClockSpeed      = I2C_CLOCK_SPEED_HZ;
     I2C_InitStruct.DutyCycle       = LL_I2C_DUTYCYCLE_2;
-    I2C_InitStruct.OwnAddress1     = I2C_SLAVE_ADDRESS;
+    I2C_InitStruct.OwnAddress1     = I2C_SLAVE_ADDRESS(GetAddressJumpers());
     I2C_InitStruct.TypeAcknowledge = LL_I2C_ACK;
     I2C_InitStruct.OwnAddrSize     = LL_I2C_OWNADDRESS1_7BIT;
     LL_I2C_Init(I2C1, &I2C_InitStruct);
