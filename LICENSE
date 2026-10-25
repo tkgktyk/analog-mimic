@@ -2,7 +2,12 @@ Analog Mimic License Layout
 =========================================
 - Hardware files (under /hardware): CERN-OHL-S-2.0
 - Firmware source code (under /firmware): GNU General Public License v3 (GPL v3)
-- Aricles (under /docs): CC-BY 4.0
+  - Exception: firmware/core/Inc/mimic_registers.h is dual-licensed under
+    GPL-3.0 or MIT, as it is shared with the Arduino library.
+  - Third-party code under /firmware/lib keeps its own license
+    (firmware/lib/PY32F071_Firmware: see the license files and the file headers in it).
+- Articles (under /docs): CC BY 4.0
+- Arduino library: separate repository (tkgktyk/analog-mimic-arduino), MIT
 
 -----------------------------------------
 1. CERN Open Hardware Licence Version 2 - Strongly Reciprocal

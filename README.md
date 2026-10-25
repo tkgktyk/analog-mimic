@@ -74,7 +74,7 @@ To lower the barrier to entry for real-time digital signal processing, we provid
 * **Zero-Hassle Control:** Complex Q15 fixed-point arithmetic and low-level I²C register maps are completely abstracted away.
 * **Intuitive High-Level API:** Users can dynamically switch emulation modes and fine-tune physical parameters—such as cutoff frequencies, amplifier gains, or envelope release times—by simply passing variables into straightforward function calls.
 
-*For comprehensive details on the inner workings, execution framework, and API configurations, please refer to [firmware_reference.md](docs/firmware_reference.md) and the Doxygen-annotated [Mimic.h](software/Mimic/src/Mimic.h).*
+*For details on the inner workings and the register map, see [firmware_reference.md](docs/firmware_reference.md). The Arduino library is [AnalogMimic](https://github.com/tkgktyk/analog-mimic-arduino).*
 
 ## DEMO: Analog Emulation
 ![Demo: Mimic01](hardware/assembly/mimic01_20260522/demo.png)

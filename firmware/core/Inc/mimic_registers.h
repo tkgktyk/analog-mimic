@@ -2,22 +2,16 @@
  ******************************************************************************
  * @file    mimic_registers.h
  * @author  TAKAGI Katsuyuki
- * @brief   Memory-Mapped Register Definitions, Volatile Configuration Layouts, 
+ * @brief   Memory-Mapped Register Definitions, Volatile Configuration Layouts,
  * and Thread-Safe Virtual Telemetry Handlers.
  *-----------------------------------------------------------------------------
  * Copyright (C) 2026 TAKAGI Katsuyuki
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, version 3.
+ * SPDX-License-Identifier: GPL-3.0-only OR MIT
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ * This file is shared between the firmware (GPL-3.0) and the Arduino library
+ * (MIT), and may be used under either license at your option.
+ * See LICENSE in the respective repository for the full license texts.
  ******************************************************************************
  */
 
