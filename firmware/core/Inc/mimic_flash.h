@@ -34,28 +34,28 @@ extern "C" {
 // =========================================================
 
 /**
- * @brief  Writes the Q15 fractional gain calibration value to Flash memory.
- * @param  gain_q15 The 16-bit unsigned Q15 gain multiplier to store.
+ * @brief  Writes the gain calibration value to Flash memory.
+ * @param  gain_uq1_15 Gain multiplier to store (uq1_15, 1.0 = 32768).
  * @return true if the Flash write operation was successful, false otherwise.
  */
-bool MimicFlash_WriteGainQ15Data(uint16_t gain_q15);
+bool MimicFlash_WriteGainData(uint16_t gain_uq1_15);
 
 /**
- * @brief  Reads the Q15 fractional gain calibration value from Flash memory.
- * @return The stored 16-bit Q15 gain value. Returns a default value if uninitialized.
+ * @brief  Reads the gain calibration value from Flash memory.
+ * @return The stored gain (uq1_15). Returns 1.0 (32768) if uninitialized.
  */
-uint16_t MimicFlash_ReadGainQ15Data(void);
+uint16_t MimicFlash_ReadGainData(void);
 
 /**
- * @brief  Writes the raw ADC offset calibration value to pseudo-EEPROM (Flash page).
- * @param  offset The 16-bit signed offset value to store.
+ * @brief  Writes the offset calibration value to Flash memory.
+ * @param  offset_raw_fx3 Offset to store (raw_fx3, 1 LSB = 8).
  * @return true if the Flash write operation was successful, false otherwise.
  */
-bool MimicFlash_WriteOffsetData(int16_t offset);
+bool MimicFlash_WriteOffsetData(int16_t offset_raw_fx3);
 
 /**
- * @brief  Reads the raw ADC offset calibration value from Flash memory.
- * @return The stored 16-bit signed offset value. Returns a default value if uninitialized.
+ * @brief  Reads the offset calibration value from Flash memory.
+ * @return The stored offset (raw_fx3). Returns 0 if uninitialized.
  */
 int16_t MimicFlash_ReadOffsetData(void);
 

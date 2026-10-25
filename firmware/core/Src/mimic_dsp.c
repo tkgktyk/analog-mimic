@@ -25,6 +25,7 @@
 #include "py32f0xx_hal.h"
 #include "mimic_device.h"
 #include <string.h>
+#include <stdint.h>
 
 // =========================================================
 // Deterministic Output Slot (Shared between ISR and DMA)
@@ -34,45 +35,76 @@ static volatile uint32_t mimic_output_slot = MIMIC_ADC_MID_VALUE;
 // =========================================================
 // Fixed-Point Arithmetic Configurations
 // =========================================================
-#define Q15_SHIFT           4  // For 12-bit ADC (12 + 4 = 16 bits)
-#define FRACTIONAL_BITS_Q15 15 // Q15 fractional bits for 32-bit shifting
-#define Q16_SHIFT           16 // Q16 fractional bits for decimation math
+// Number formats (see also mimic_registers.h)
+//   _raw          : ADC / DAC code, 0 = 0 V, 4096 = VDD (integer, 0 - 4095)
+//   _raw_fx3      : raw << 3, 1 LSB = 8 (interface format for voltages)
+//   _raw_vref_fx3 : (raw << 3) - Vref, relative to the common Vref, 1 LSB = 8
+//   _raw_ctr_fx4  : (raw - MID) << 4, 1 LSB = 16 (slew, S&H; no signal center)
+//   _raw_fx15     : raw << 15 (output stage offset)
+//   _raw_fx16     : raw << 16, 1 LSB = 65536 (decimation interpolation)
+//   _q0_15        : signed coefficient, 15 fractional bits (-1.0 to < 1.0)
+//   _q1_15        : signed multiplier, 15 fractional bits (-2.0 to < 2.0, int32)
+//   _uq1_15       : unsigned gain, 15 fractional bits (0 to < 2.0, 1.0 = 32768)
+//   _mant / _exp  : mantissa (q0_15) and exponent (shift) pair
+#define CTR_FX4_FRAC_BITS   4  // raw -> raw_ctr_fx4 (12 + 4 = 16 bits)
+#define RAW_FX3_FRAC_BITS   MIMIC_RAW_FX3_FRAC_BITS
+#define RAW_FX3_HALF        (1 << (RAW_FX3_FRAC_BITS - 1))                    // 0.5 LSB in raw_fx3
+#define Q15_FRAC_BITS       15 // Fractional bits of q0_15 / q1_15 / uq1_15
+#define FX16_FRAC_BITS      16 // Fractional bits of raw_fx16 (decimation interpolation)
+
+#define MID_ROUND_RAW_FX4   ((MIMIC_ADC_MID_VALUE << CTR_FX4_FRAC_BITS) + (1 << (CTR_FX4_FRAC_BITS - 1)))
+#define OUT_ROUND_RAW_FX15  (1 << (Q15_FRAC_BITS - 1))                         // 0.5 LSB in raw_fx15
+
+// Overflow guards: values beyond these saturate in the output stage anyway
+#define OUT_GUARD_RAW       (2 * (MIMIC_ADC_MAX_VALUE + 1))                    // +/-8192 LSB
+#define OUT_GUARD_RAW_FX3   (OUT_GUARD_RAW << RAW_FX3_FRAC_BITS)
+#define INTEGRAL_STATE_LIM  (1 << 16)  // |state * leak_q0_15| < 2^31
 
 // =========================================================
 // DSP Specific Constants
 // =========================================================
-#define LUT_INDEX_SHIFT     6
-#define LUT_FRAC_MASK       0x3F
-#define BIQUAD_ROUND_VAL    8192
-#define BIQUAD_SHIFT        14
+// LOG mode: per-mode tables in raw << LOG_OUT_FRAC_BITS (= raw_fx3 with 4 more bits)
+#define LOG_SEG_BITS        6                              // 64 segments per octave
+#define LOG_OUT_FRAC_BITS   7
+#define LOG_OUT_ROUND       (1 << (LOG_OUT_FRAC_BITS - 1))
+#define LOG10_2_Q16         19728                          // log10(2) * 2^16
+#define ANTILOG_T_FRAC_BITS 20                             // octaves, Q20
+#define ANTILOG_MAX_OCT     13                             // beyond this the output saturates
+#define ANTILOG_LIM         (OUT_GUARD_RAW << LOG_OUT_FRAC_BITS)
+// Biquad mode: TPT state-variable filter (bilinear, same response as a cookbook biquad).
+// Signals are raw_vref_fx3; the two integrator states have SVF_STATE_FRAC_BITS fractional
+// bits (raw << 15) so that low cutoffs (down to fs / 100000) keep moving.
+#define SVF_STATE_FRAC_BITS 15                                       // states: raw << 15
+#define SVF_STATE_TO_FX3    (SVF_STATE_FRAC_BITS - RAW_FX3_FRAC_BITS) // state -> raw_vref_fx3
+#define SVF_G1_FRAC_BITS    10                                       // g1 = k + g
+#define SVF_K_FRAC_BITS     11                                       // k = 1 / Q
+#define SVF_SHIFT_MAX       30
 
 // =========================================================
-// Look-Up Tables (LUT)
+// Base Tables (LOG mode, used at configuration time)
 // =========================================================
-// Placed in SRAM (.data.lut) to guarantee zero-wait-state deterministic access at 72MHz.
-// Note: 'const' is intentionally omitted on the array definition to prevent GCC section 
-// attribute conflicts with executable/writable SRAM sections, while read-only access is 
-// strictly enforced via the 'const int32_t *active_lut_ptr' pointer.
-#define MIMIC_SRAM_LUT __attribute__((section(".data.lut")))
-
-MIMIC_SRAM_LUT static int32_t lut_log[65] = {
-    -32768, -25000, -20000, -16000, -13000, -10500, -8500, -6800, -5300, -4000,
-    -2800, -1700, -700, 200, 1000, 1800, 2500, 3200, 3800, 4400,
-    4900, 5400, 5900, 6300, 6700, 7100, 7500, 7800, 8100, 8400,
-    8700, 9000, 9200, 9500, 9700, 9900, 10100, 10300, 10500, 10700,
-    10900, 11100, 11300, 11500, 11600, 11800, 12000, 12100, 12300, 12400,
-    12600, 12700, 12900, 13000, 13100, 13300, 13400, 13500, 13600, 13800,
-    13900, 14000, 14100, 14200, 14300
+// The per-sample tables are scaled from these in MimicDSP_UpdateParameters() and kept
+// in the mode context (SRAM), so the sampling path only reads RAM.
+// log2(1 + i/64) in Q15 (i = 0 - 64), used at configuration time
+static const int32_t log2_1pf_q15[65] = {
+    0, 733, 1455, 2166, 2866, 3556, 4236, 4907, 5568, 6220,
+    6863, 7498, 8124, 8742, 9352, 9954, 10549, 11136, 11716, 12289,
+    12855, 13415, 13968, 14514, 15055, 15589, 16117, 16639, 17156, 17667,
+    18173, 18673, 19168, 19658, 20143, 20623, 21098, 21568, 22034, 22495,
+    22952, 23404, 23852, 24296, 24736, 25172, 25604, 26031, 26455, 26876,
+    27292, 27705, 28114, 28520, 28922, 29321, 29717, 30109, 30498, 30884,
+    31267, 31647, 32024, 32397, 32768
 };
 
-MIMIC_SRAM_LUT static int32_t lut_antilog[65] = {
-    -32768, -31768, -30000, -27000, -23000, -18000, -12000, -5000, 2000, 8000,
-    13000, 17000, 20000, 22500, 24500, 26000, 27300, 28400, 29300, 30000,
-    30600, 31100, 31500, 31800, 32100, 32300, 32500, 32600, 32700, 32767,
-    32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767,
-    32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767,
-    32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767,
-    32767, 32767, 32767, 32767, 32767
+// 2^(i/64) in Q15 (i = 0 - 64), used at configuration time
+static const int32_t exp2_f_q15[65] = {
+    32768, 33125, 33486, 33850, 34219, 34591, 34968, 35349, 35734, 36123,
+    36516, 36914, 37316, 37722, 38133, 38548, 38968, 39392, 39821, 40255,
+    40693, 41136, 41584, 42037, 42495, 42958, 43425, 43898, 44376, 44859,
+    45348, 45842, 46341, 46846, 47356, 47871, 48393, 48920, 49452, 49991,
+    50535, 51085, 51642, 52204, 52773, 53347, 53928, 54515, 55109, 55709,
+    56316, 56929, 57549, 58176, 58809, 59449, 60097, 60751, 61413, 62081,
+    62757, 63441, 64132, 64830, 65536
 };
 
 // =========================================================
@@ -82,8 +114,10 @@ MIMIC_SRAM_LUT static int32_t lut_antilog[65] = {
 // is strictly stopped before MimicDSP_UpdateParameters() modifies them from Main.
 
 typedef struct {
-    int32_t            out_mult_q15;    // Signed Q15 multiplier
-    int32_t            out_offset_calc; // Final computed offset including inversion
+    int32_t            out_mult_q1_15;      // Output gain, signed (negative when inverted)
+    int32_t            out_offset_raw_fx15; // Output offset incl. inversion and +0.5 LSB rounding
+    int32_t            vref_raw_fx3;        // Common reference (Vref), 0 V - VDD
+    int32_t            vref_round_raw_fx3;  // vref_raw_fx3 + 0.5 LSB (raw_vref_fx3 -> raw rounding)
     uint8_t            current_mode;
     MimicOutputRoute_t output_route;
     uint8_t            global_flags;
@@ -93,64 +127,83 @@ static MimicPipeline_t pipeline;
 
 #define DELAY_BUFFER_SIZE 4096
 #define DELAY_BUFFER_MASK (DELAY_BUFFER_SIZE - 1)
-static uint16_t delay_buffer[DELAY_BUFFER_SIZE] = {0};
+static uint16_t delay_buffer_raw[DELAY_BUFFER_SIZE] = {0};
 
-static uint8_t nonlinear_lut_type = MIMIC_LUT_LOG;
-static const int32_t *active_lut_ptr = lut_log;
 
 // =========================================================
 // Complete DSP Mode-Specific Contexts (Unified Structs)
 // =========================================================
+// Every mode with a signal center works around the common Vref (raw_vref_fx3, 1 LSB = 8).
+// Modes without a center keep their own formats.
 
 typedef struct {
-    int32_t alpha_q15;       // Config
-    int32_t accum;           // State
+    uint8_t type;            // Config: MIMIC_FILTER_1ST_*
+    int32_t alpha_q0_15;     // Config
+    int32_t accum;           // State (raw_vref_fx3 << Q15_FRAC_BITS)
 } Filter1st_t;
 
 typedef struct {
-    int32_t b0, b1, b2;      // Config
-    int32_t a1, a2;          // Config
-    int32_t s1, s2;          // State
-} Biquad_t;
+    int32_t g_mant;          // Config: g = tan(pi fc / fs) = g_mant >> g_shift (raw_vref_fx3 -> state units)
+    int32_t g_half;          // Config: rounding for g_shift
+    int32_t e_mant;          // Config: e = 1 - 1 / (1 + g k + g^2) = e_mant >> e_shift
+    int32_t e_half;          // Config: rounding for e_shift
+    int32_t g1;              // Config: k + g, SVF_G1_FRAC_BITS
+    int32_t k;               // Config: 1 / Q, SVF_K_FRAC_BITS
+    uint32_t g_shift;        // Config
+    uint32_t e_shift;        // Config
+    uint8_t type;            // Config: MIMIC_FILTER_BIQUAD_*
+    int32_t s1, s2;          // State: integrators, raw_vref << SVF_STATE_FRAC_BITS
+} Svf_t;
 
 typedef struct {
-    int32_t gain_fract_q15;  // Config
-    int32_t gain_shift;      // Config
-    int32_t offset_q15;      // Config
+    int32_t gain_mant_q0_15; // Config: gain = mant * 2^exp
+    int32_t gain_exp;        // Config
+    int32_t mant_lim;        // Config: |mant product| limit before the shift (overflow guard)
 } Pga_t;
 
 typedef struct {
-    int32_t upper;           // Config
-    int32_t lower;           // Config
+    uint8_t type;            // Config: MIMIC_COMPARATOR_*
+    int32_t upper_raw;       // Config: "adc > upper" (floor of the raw_fx3 threshold)
+    int32_t lower_raw;       // Config: "adc < lower" (ceil of the raw_fx3 threshold)
     int32_t wave_last_raw;   // State
 } Comparator_t;
 
 typedef struct {
-    int32_t scale_fract_q15; // Config
-    int32_t scale_shift;     // Config (Derivative/Integral only)
-    int32_t last_q15;        // State
+    uint8_t type;             // Config: MIMIC_MATH_*
+    int32_t scale_mant_q0_15; // Config: scale = mant * 2^exp
+    int32_t scale_exp;        // Config
+    int32_t mant_lim;         // Config: overflow guard (derivative)
+    int32_t last_raw_vref_fx3;// State
 } Math_t;
 
 typedef struct {
-    int32_t upper;           // Config
-    int32_t lower;           // Config
+    int32_t max_step_raw_ctr_fx4; // Config: max change per sample
+    int32_t last_raw_ctr_fx4;     // State
+} Slew_t;
+
+typedef struct {
+    int32_t upper_raw;       // Config: comparison (floor)
+    int32_t lower_raw;       // Config: comparison (ceil)
+    int32_t upper_out_raw;   // Config: output level (rounded)
+    int32_t lower_out_raw;   // Config: output level (rounded)
 } Clipper_t;
 
 typedef struct {
-    int32_t decay_q15;       // Config
-    uint8_t polarity;        // Config
-    int32_t last_q15;        // State
+    int32_t decay_q0_15;      // Config
+    uint8_t polarity;         // Config
+    int32_t last_raw_vref_fx3;// State
 } Envelope_t;
 
 typedef struct {
-    int32_t vref_raw;        // Config
+    uint8_t type;            // Config: MIMIC_RECT_FULL / MIMIC_RECT_HALF
+    uint8_t polarity;        // Config: MIMIC_POLARITY_*
 } Rectifier_t;
 
 typedef struct {
-    uint32_t period_samples; // Config
-    uint32_t track_samples;  // Config
-    uint32_t counter;        // State
-    int32_t  last_q15;       // State
+    uint32_t period_samples;  // Config
+    uint32_t track_samples;   // Config
+    uint32_t counter;         // State
+    int32_t  last_raw_ctr_fx4;// State
 } SampleHold_t;
 
 typedef struct {
@@ -158,17 +211,27 @@ typedef struct {
     uint32_t delay_write_ptr; // State
 } Delay_t;
 
+typedef struct {
+    uint8_t type;             // Config: MIMIC_LOG_TYPE_*
+    int32_t seg[65];          // LOG: slope * log2(1 + i/64), ANTILOG: unit * 2^(i/64) (raw << 7)
+    int32_t oct[12];          // LOG: Vref + slope * (e - log2(unit)) for e = 0 - 11 (raw << 7)
+    int32_t d_lim;            // ANTILOG: clamp of (x - Vref), raw_fx3
+    int32_t inv_k_q20;        // ANTILOG: octaves per raw_fx3 unit (Q20)
+} Log_t;
+
 typedef union {
     Filter1st_t  filter1st;
-    Biquad_t     bq;
+    Svf_t        svf;
     Pga_t        pga;
     Comparator_t comp;
     Math_t       math;
+    Slew_t       slew;
     Clipper_t    clipper;
     Envelope_t   envelope;
     Rectifier_t  rect;
     SampleHold_t sh;
     Delay_t      delay;
+    Log_t        log;
 } DSPContext_u;
 
 static DSPContext_u dsp_ctx;
@@ -181,21 +244,37 @@ static uint32_t decimation_shift    = 0;
 static uint32_t adc_accumulator     = 0;
 static uint32_t decimation_count    = 0;
 
-static int32_t  y_old               = MIMIC_ADC_MID_VALUE;
-static int32_t  y_new               = MIMIC_ADC_MID_VALUE;
-static int32_t  delta_step_q16      = 0;
-static int32_t  current_dac_val_q16 = (MIMIC_ADC_MID_VALUE << Q16_SHIFT);
+static int32_t  y_old_raw           = MIMIC_ADC_MID_VALUE;
+static int32_t  y_new_raw           = MIMIC_ADC_MID_VALUE;
+static int32_t  delta_step_raw_fx16 = 0;
+static int32_t  out_raw_fx16        = (MIMIC_ADC_MID_VALUE << FX16_FRAC_BITS);
 
 // =========================================================
 // Utilities & I2C Parameter Parsers (32-bit Safe)
 // =========================================================
 
-static inline __attribute__((always_inline)) int32_t RawToQ15(int32_t raw) {
-    return (raw - MIMIC_ADC_MID_VALUE) << Q15_SHIFT;
+// --- raw_ctr_fx4: relative to MID (modes that do not depend on Vref) ---
+static inline __attribute__((always_inline)) int32_t RawToCtrFx4(int32_t raw) {
+    return (raw - MIMIC_ADC_MID_VALUE) << CTR_FX4_FRAC_BITS;
 }
 
-static inline __attribute__((always_inline)) int32_t Q15ToRaw(int32_t q15) {
-    return (q15 >> Q15_SHIFT) + MIMIC_ADC_MID_VALUE;
+static inline __attribute__((always_inline)) int32_t CtrFx4ToRaw(int32_t v_raw_ctr_fx4) {
+    return (v_raw_ctr_fx4 + MID_ROUND_RAW_FX4) >> CTR_FX4_FRAC_BITS;   // rounded
+}
+
+// --- raw_vref_fx3: relative to the common Vref ---
+static inline __attribute__((always_inline)) int32_t RawToVrefFx3(int32_t raw) {
+    return (raw << RAW_FX3_FRAC_BITS) - pipeline.vref_raw_fx3;
+}
+
+static inline __attribute__((always_inline)) int32_t VrefFx3ToRaw(int32_t v_raw_vref_fx3) {
+    return (v_raw_vref_fx3 + pipeline.vref_round_raw_fx3) >> RAW_FX3_FRAC_BITS;   // rounded
+}
+
+static inline __attribute__((always_inline)) int32_t ClampI32(int32_t v, int32_t lim) {
+    if (v >  lim) return  lim;
+    if (v < -lim) return -lim;
+    return v;
 }
 
 static inline __attribute__((always_inline)) uint32_t MuxDacGpio(uint32_t result) {
@@ -205,157 +284,196 @@ static inline __attribute__((always_inline)) uint32_t MuxDacGpio(uint32_t result
 }
 
 // =========================================================
-// 2. DSP Core Functions (Returns int32_t, Without Internal Clipping)
+// 2. DSP Core Functions (Return raw codes; out-of-range values saturate in the output stage)
 // =========================================================
 
-static inline __attribute__((always_inline)) int32_t ProcessFilterLpf(int32_t adc_val) {
+// 1st-order filter: LPF y = Vref + LPF(d), HPF y = Vref + (d - LPF(d)), d = x - Vref.
+// Like an RC filter returning to Vref: a step of Vref settles with the time constant.
+static inline __attribute__((always_inline)) int32_t ProcessFilter1st(int32_t adc_val) {
     Filter1st_t *p = &dsp_ctx.filter1st;
 
-    int32_t in_q15 = RawToQ15(adc_val);
-    int32_t state_q15 = p->accum >> FRACTIONAL_BITS_Q15;
-    p->accum += (in_q15 - state_q15) * p->alpha_q15;
-    return Q15ToRaw(p->accum >> FRACTIONAL_BITS_Q15);
+    int32_t in_raw_vref_fx3 = RawToVrefFx3(adc_val);
+    int32_t state_raw_vref_fx3 = p->accum >> Q15_FRAC_BITS;
+    p->accum += (in_raw_vref_fx3 - state_raw_vref_fx3) * p->alpha_q0_15;
+
+    int32_t out_raw_vref_fx3 = p->accum >> Q15_FRAC_BITS;
+    if (p->type == MIMIC_FILTER_1ST_HPF) out_raw_vref_fx3 = in_raw_vref_fx3 - out_raw_vref_fx3;
+    return VrefFx3ToRaw(out_raw_vref_fx3);
 }
 
-static inline __attribute__((always_inline)) int32_t ProcessFilterHpf(int32_t adc_val) {
-    Filter1st_t *p = &dsp_ctx.filter1st;
-
-    int32_t in_q15 = RawToQ15(adc_val);
-    int32_t state_q15 = p->accum >> FRACTIONAL_BITS_Q15;
-    p->accum += (in_q15 - state_q15) * p->alpha_q15;
-    return Q15ToRaw(in_q15 - (p->accum >> FRACTIONAL_BITS_Q15));
-}
-
+// Biquad mode (TPT state-variable filter): y = Vref + H(x - Vref)
+//   v  = x - g1 * s1 - s2,  hp = v / (1 + g k + g^2) = v - e * v
+//   bp = g * hp + s1,  s1 = bp + g * hp
+//   lp = g * bp + s2,  s2 = lp + g * bp
+//   LPF = lp, HPF = hp, BPF = k * bp (0 dB peak), NOTCH = x - k * bp
+// Every product is (integer signal, <= 2^19) x (coefficient, <= 2^12), within int32.
 static inline __attribute__((always_inline)) int32_t ProcessBiquadFilter(int32_t adc_val) {
-    Biquad_t *p = &dsp_ctx.bq;
+    Svf_t *p = &dsp_ctx.svf;
+    int32_t x  = RawToVrefFx3(adc_val);
+    int32_t s1 = p->s1;
+    int32_t s2 = p->s2;
 
-    int32_t x0 = adc_val - MIMIC_ADC_MID_VALUE;
-    
-    int32_t acc = p->b0 * x0 + p->s1;
-    int32_t y0 = (acc + BIQUAD_ROUND_VAL) >> BIQUAD_SHIFT;
-    
-    acc -= (y0 << BIQUAD_SHIFT); 
-    acc += p->s2;
-    acc += p->b1 * x0;
-    acc += p->a1 * y0;
-    p->s1 = acc;
+    int32_t v   = x - ((p->g1 * (s1 >> SVF_STATE_TO_FX3)) >> SVF_G1_FRAC_BITS) - (s2 >> SVF_STATE_TO_FX3);
+    int32_t hp  = v - ((p->e_mant * v + p->e_half) >> p->e_shift);
+    int32_t ghp = (p->g_mant * hp + p->g_half) >> p->g_shift;
+    int32_t bp  = ghp + s1;
+    p->s1 = bp + ghp;
 
-    p->s2 = p->b2 * x0 + p->a2 * y0;
+    int32_t bp_fx3 = bp >> SVF_STATE_TO_FX3;
+    int32_t gbp = (p->g_mant * bp_fx3 + p->g_half) >> p->g_shift;
+    int32_t lp  = gbp + s2;
+    p->s2 = lp + gbp;
 
-    return y0 + MIMIC_ADC_MID_VALUE; 
+    int32_t y;
+    switch (p->type) {
+        case MIMIC_FILTER_BIQUAD_LPF: y = (lp + (1 << (SVF_STATE_TO_FX3 - 1))) >> SVF_STATE_TO_FX3; break;
+        case MIMIC_FILTER_BIQUAD_HPF: y = hp; break;
+        case MIMIC_FILTER_BIQUAD_BPF: y = (p->k * bp_fx3 + (1 << (SVF_K_FRAC_BITS - 1))) >> SVF_K_FRAC_BITS; break;
+        case MIMIC_FILTER_BIQUAD_NOTCH: y = x - ((p->k * bp_fx3 + (1 << (SVF_K_FRAC_BITS - 1))) >> SVF_K_FRAC_BITS); break;
+        default: y = x; break;   // UNITY: same work, input passed through (profiling)
+    }
+
+    // Keep the output-stage multiply within int32 for high-Q filters
+    return VrefFx3ToRaw(ClampI32(y, OUT_GUARD_RAW_FX3));
 }
 
+// PGA: y = Vref + G * (x - Vref)
 static inline __attribute__((always_inline)) int32_t ProcessPga(int32_t adc_val) {
     Pga_t *p = &dsp_ctx.pga;
 
-    int32_t in_q15 = RawToQ15(adc_val);
-    int32_t signal = in_q15 - p->offset_q15;
-    int32_t out_q15 = (signal * p->gain_fract_q15) >> FRACTIONAL_BITS_Q15;
-    
-    if (p->gain_shift > 0) out_q15 <<= p->gain_shift;
-    return Q15ToRaw(out_q15 + p->offset_q15);
+    int32_t in_raw_vref_fx3 = RawToVrefFx3(adc_val);
+    int32_t m = (in_raw_vref_fx3 * p->gain_mant_q0_15) >> Q15_FRAC_BITS;
+    m = ClampI32(m, p->mant_lim);
+    return VrefFx3ToRaw(m << p->gain_exp);
 }
 
-static inline __attribute__((always_inline)) int32_t ProcessPrsWindow(int32_t adc_val) {
+// Comparator: window (HIGH outside [lower, upper]) or Schmitt trigger (hysteresis)
+static inline __attribute__((always_inline)) int32_t ProcessComparator(int32_t adc_val) {
     Comparator_t *p = &dsp_ctx.comp;
 
-    if (adc_val > p->upper || adc_val < p->lower) return MIMIC_ADC_MAX_VALUE;
-    return MIMIC_ADC_MIN_VALUE;
-}
-
-static inline __attribute__((always_inline)) int32_t ProcessComparatorSchmitt(int32_t adc_val) {
-    Comparator_t *p = &dsp_ctx.comp;
-    
-    if (adc_val > p->upper) p->wave_last_raw = MIMIC_ADC_MAX_VALUE;
-    else if (adc_val < p->lower) p->wave_last_raw = MIMIC_ADC_MIN_VALUE;
-    
+    if (p->type == MIMIC_COMPARATOR_WINDOW) {
+        if (adc_val > p->upper_raw || adc_val < p->lower_raw) return MIMIC_ADC_MAX_VALUE;
+        return MIMIC_ADC_MIN_VALUE;
+    }
+    if (adc_val > p->upper_raw) p->wave_last_raw = MIMIC_ADC_MAX_VALUE;
+    else if (adc_val < p->lower_raw) p->wave_last_raw = MIMIC_ADC_MIN_VALUE;
     return p->wave_last_raw;
 }
 
+// Envelope: tracks the swing from Vref and decays toward Vref
 static inline __attribute__((always_inline)) int32_t ProcessEnvelopeFollower(int32_t adc_val) {
     Envelope_t *p = &dsp_ctx.envelope;
 
-    int32_t in_q15 = RawToQ15(adc_val);
-    if (p->polarity == MIMIC_POLARITY_NEGATIVE) in_q15 = -in_q15;
-    if (in_q15 < 0) in_q15 = 0;
+    int32_t in_raw_vref_fx3 = RawToVrefFx3(adc_val);
+    if (p->polarity == MIMIC_POLARITY_NEGATIVE) in_raw_vref_fx3 = -in_raw_vref_fx3;
+    if (in_raw_vref_fx3 < 0) in_raw_vref_fx3 = 0;
 
-    if (in_q15 > p->last_q15) {
-        p->last_q15 = in_q15;
+    if (in_raw_vref_fx3 > p->last_raw_vref_fx3) {
+        p->last_raw_vref_fx3 = in_raw_vref_fx3;
     } else {
-        p->last_q15 = (p->last_q15 * p->decay_q15) >> FRACTIONAL_BITS_Q15;
+        p->last_raw_vref_fx3 = (p->last_raw_vref_fx3 * p->decay_q0_15) >> Q15_FRAC_BITS;
     }
-    return Q15ToRaw(p->last_q15);
+    return VrefFx3ToRaw(p->last_raw_vref_fx3);   // magnitude above Vref (same as before for both polarities)
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessClipper(int32_t adc_val) {
     Clipper_t *p = &dsp_ctx.clipper;
 
-    if (adc_val > p->upper) return p->upper;
-    if (adc_val < p->lower) return p->lower;
+    if (adc_val > p->upper_raw) return p->upper_out_raw;
+    if (adc_val < p->lower_raw) return p->lower_out_raw;
     return adc_val; 
 }
 
-static inline __attribute__((always_inline)) int32_t ProcessNonlinearLut(int32_t adc_val) {
-    const int32_t *lut = active_lut_ptr;
+// LOG:     y = Vref + slope * log10(x / unit)      (x: magnitude from 0 V)
+// ANTILOG: y = unit * 10^((x - Vref) / slope)     (y: magnitude from 0 V)
+static inline __attribute__((always_inline)) int32_t ProcessLog(int32_t adc_val) {
+    Log_t *p = &dsp_ctx.log;
 
-    int32_t index = adc_val >> LUT_INDEX_SHIFT;
-    int32_t frac = adc_val & LUT_FRAC_MASK;
+    if (p->type == MIMIC_LOG_TYPE_LOG) {
+        uint32_t x = (adc_val < 1) ? 1u : (uint32_t)adc_val;
 
-    const int32_t *p = &lut[index];
-    int32_t y0 = p[0];
-    int32_t y1 = p[1];
+        // e = floor(log2(x)), x = 1 - 4095 (binary search: Cortex-M0+ has no CLZ)
+        uint32_t e = 0;
+        if (x >> 8)       e = 8;
+        if (x >> (e + 4)) e += 4;
+        if (x >> (e + 2)) e += 2;
+        if (x >> (e + 1)) e += 1;
 
-    int32_t interpolated = y0 + (((y1 - y0) * frac) >> LUT_INDEX_SHIFT);
-    return Q15ToRaw(interpolated);
+        uint32_t f    = (x << (11 - e)) - 2048u;           // mantissa fraction, 11 bits
+        uint32_t i    = f >> (11 - LOG_SEG_BITS);
+        int32_t  frac = (int32_t)(f & ((1u << (11 - LOG_SEG_BITS)) - 1));
+        int32_t  y    = p->oct[e] + p->seg[i]
+                      + (((p->seg[i + 1] - p->seg[i]) * frac) >> (11 - LOG_SEG_BITS));
+        return (y + LOG_OUT_ROUND) >> LOG_OUT_FRAC_BITS;
+    }
+
+    // ANTILOG
+    int32_t d = ClampI32(RawToVrefFx3(adc_val), p->d_lim);
+    int32_t t = d * p->inv_k_q20;                           // octaves (Q20), |t| <= 13 + margin
+    int32_t n = t >> ANTILOG_T_FRAC_BITS;                   // floor
+    uint32_t f = (uint32_t)(t - (n << ANTILOG_T_FRAC_BITS));
+    uint32_t i = f >> (ANTILOG_T_FRAC_BITS - LOG_SEG_BITS);
+    int32_t frac = (int32_t)((f >> (ANTILOG_T_FRAC_BITS - LOG_SEG_BITS - 5)) & 31);
+    int32_t m = p->seg[i] + (((p->seg[i + 1] - p->seg[i]) * frac) >> 5);
+    if (n >= 0) {
+        int32_t lim = ANTILOG_LIM >> n;
+        if (m > lim) m = lim;
+        m <<= n;
+    } else {
+        m >>= -n;
+    }
+    return (m + LOG_OUT_ROUND) >> LOG_OUT_FRAC_BITS;
 }
 
-static inline __attribute__((always_inline)) int32_t ProcessMathDerivative(int32_t adc_val) {
+// Math: derivative y = Vref + k * dx/dt, or leaky integrator leaking toward Vref
+static inline __attribute__((always_inline)) int32_t ProcessMath(int32_t adc_val) {
     Math_t *p = &dsp_ctx.math;
 
-    int32_t in_q15 = RawToQ15(adc_val);
-    int32_t diff = in_q15 - p->last_q15;
-    p->last_q15 = in_q15;
+    int32_t in_raw_vref_fx3 = RawToVrefFx3(adc_val);
+    int32_t s = p->scale_exp;
 
-    int32_t diff_mult = (diff * p->scale_fract_q15) >> FRACTIONAL_BITS_Q15;
-    int32_t s = p->scale_shift;
-    int32_t out_q15 = (s >= 0) ? (diff_mult << s) : (diff_mult >> -s);
-    
-    return Q15ToRaw(out_q15);
-}
+    if (p->type == MIMIC_MATH_DERIVATIVE) {
+        int32_t diff = in_raw_vref_fx3 - p->last_raw_vref_fx3;
+        p->last_raw_vref_fx3 = in_raw_vref_fx3;
 
-static inline __attribute__((always_inline)) int32_t ProcessMathIntegral(int32_t adc_val) {
-    Math_t *p = &dsp_ctx.math;
+        int32_t diff_mult = (diff * p->scale_mant_q0_15) >> Q15_FRAC_BITS;
+        int32_t out_raw_vref_fx3 = (s >= 0) ? (ClampI32(diff_mult, p->mant_lim) << s)
+                                            : (diff_mult >> -s);
+        return VrefFx3ToRaw(out_raw_vref_fx3);
+    }
 
-    int32_t in_q15 = RawToQ15(adc_val);
-    int32_t history_leaked = (p->last_q15 * p->scale_fract_q15) >> FRACTIONAL_BITS_Q15;
-
-    int32_t s = p->scale_shift;
-    int32_t input_scaled = (s >= 0) ? (in_q15 << s) : (in_q15 >> -s);
-
-    p->last_q15 = history_leaked + input_scaled;
-    return Q15ToRaw(p->last_q15);
+    // Integral (s <= 1, limited by UpdateParameters)
+    int32_t history_leaked = (p->last_raw_vref_fx3 * p->scale_mant_q0_15) >> Q15_FRAC_BITS;
+    int32_t input_scaled = (s >= 0) ? (in_raw_vref_fx3 << s) : (in_raw_vref_fx3 >> -s);
+    p->last_raw_vref_fx3 = ClampI32(history_leaked + input_scaled, INTEGRAL_STATE_LIM);
+    return VrefFx3ToRaw(p->last_raw_vref_fx3);
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessSlewRateLimiter(int32_t adc_val) {
-    Math_t *p = &dsp_ctx.math;
+    Slew_t *p = &dsp_ctx.slew;
 
-    int32_t in_q15 = RawToQ15(adc_val);
-    int32_t diff = in_q15 - p->last_q15;
+    int32_t in_raw_ctr_fx4 = RawToCtrFx4(adc_val);
+    int32_t diff = in_raw_ctr_fx4 - p->last_raw_ctr_fx4;
 
     int32_t clamped_diff = diff;
-    if (clamped_diff > p->scale_fract_q15)  clamped_diff = p->scale_fract_q15;
-    if (clamped_diff < -p->scale_fract_q15) clamped_diff = -p->scale_fract_q15;
+    if (clamped_diff > p->max_step_raw_ctr_fx4)  clamped_diff = p->max_step_raw_ctr_fx4;
+    if (clamped_diff < -p->max_step_raw_ctr_fx4) clamped_diff = -p->max_step_raw_ctr_fx4;
     
-    p->last_q15 += clamped_diff;
-    return Q15ToRaw(p->last_q15);
+    p->last_raw_ctr_fx4 += clamped_diff;
+    return CtrFx4ToRaw(p->last_raw_ctr_fx4);
 }
 
-static inline __attribute__((always_inline)) int32_t ProcessRectifierFull(int32_t adc_val) {
+// Rectifier: folds at Vref (d = x - Vref)
+//   full : positive Vref + |d|,        negative Vref - |d|
+//   half : positive Vref + max(d, 0),  negative Vref + min(d, 0)
+static inline __attribute__((always_inline)) int32_t ProcessRectifier(int32_t adc_val) {
     Rectifier_t *p = &dsp_ctx.rect;
 
-    int32_t diff = adc_val - p->vref_raw;
-    if (diff < 0) diff = -diff;
-    return p->vref_raw + diff;
+    int32_t d = RawToVrefFx3(adc_val);
+    if (p->polarity == MIMIC_POLARITY_NEGATIVE) d = -d;   // work on the positive side
+    if (d < 0) d = (p->type == MIMIC_RECT_FULL) ? -d : 0;
+    if (p->polarity == MIMIC_POLARITY_NEGATIVE) d = -d;
+    return VrefFx3ToRaw(d);
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessSampleAndHold(int32_t adc_val) {
@@ -363,16 +481,16 @@ static inline __attribute__((always_inline)) int32_t ProcessSampleAndHold(int32_
 
     p->counter++;
     if (p->counter >= p->period_samples) p->counter = 0;
-    if (p->counter < p->track_samples) p->last_q15 = RawToQ15(adc_val);
-    return Q15ToRaw(p->last_q15);
+    if (p->counter < p->track_samples) p->last_raw_ctr_fx4 = RawToCtrFx4(adc_val);
+    return CtrFx4ToRaw(p->last_raw_ctr_fx4);
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessDelay(int32_t adc_val) {
     Delay_t *p = &dsp_ctx.delay;
 
-    delay_buffer[p->delay_write_ptr] = adc_val;
+    delay_buffer_raw[p->delay_write_ptr] = adc_val;
     uint32_t read_ptr = (p->delay_write_ptr - p->delay_samples) & DELAY_BUFFER_MASK;
-    int32_t out_val = delay_buffer[read_ptr];
+    int32_t out_val = delay_buffer_raw[read_ptr];
     
     p->delay_write_ptr = (p->delay_write_ptr + 1) & DELAY_BUFFER_MASK;
     return out_val;
@@ -383,11 +501,13 @@ static inline __attribute__((always_inline)) int32_t ProcessDelay(int32_t adc_va
 // =========================================================
 
 void MimicDSP_Init(void) {
-    pipeline.current_mode    = MIMIC_MODE_ID_BYPASS_DSP;
-    pipeline.output_route    = MIMIC_OUT_OPEN;
-    pipeline.global_flags    = 0;
-    pipeline.out_mult_q15    = 1 << FRACTIONAL_BITS_Q15;
-    pipeline.out_offset_calc = 0;
+    pipeline.current_mode        = MIMIC_MODE_ID_BYPASS_DSP;
+    pipeline.output_route        = MIMIC_OUT_OPEN;
+    pipeline.global_flags        = 0;
+    pipeline.out_mult_q1_15      = 1 << Q15_FRAC_BITS;
+    pipeline.out_offset_raw_fx15 = OUT_ROUND_RAW_FX15;
+    pipeline.vref_raw_fx3        = MIMIC_VREF_DEFAULT_RAW_FX3;
+    pipeline.vref_round_raw_fx3  = MIMIC_VREF_DEFAULT_RAW_FX3 + RAW_FX3_HALF;
 
     memset((void*)&dsp_ctx, 0, sizeof(dsp_ctx));
     dsp_ctx.comp.wave_last_raw = MIMIC_ADC_MID_VALUE;
@@ -407,6 +527,65 @@ static inline __attribute__((always_inline)) int16_t ParseS16(const uint8_t *p) 
     return _MimicDevice_ReadS16_BE(p);
 }
 
+// log2(v) in Q15 for v >= 1 (configuration time only)
+static int32_t Log2Q15(uint32_t v) {
+    if (v < 1) v = 1;
+    int32_t e = 0;
+    while ((v >> (e + 1)) != 0) e++;
+    uint32_t m = (e <= 15) ? (v << (15 - e)) : (v >> (e - 15));   // [2^15, 2^16)
+    uint32_t f = m - 32768u;                                       // 15 bits
+    uint32_t i = f >> (15 - LOG_SEG_BITS);
+    int32_t frac = (int32_t)(f & ((1u << (15 - LOG_SEG_BITS)) - 1));
+    int32_t l = log2_1pf_q15[i]
+              + (((log2_1pf_q15[i + 1] - log2_1pf_q15[i]) * frac) >> (15 - LOG_SEG_BITS));
+    return (e << 15) + l;
+}
+
+static void ConfigureLog(const uint8_t *p) {
+    Log_t *c = &dsp_ctx.log;
+    int32_t slope = ParseS16(p + 1);     // raw_fx3 per decade
+    int32_t unit  = ParseS16(p + 3);     // raw_fx3
+    if (slope == 0) slope = 1;
+    if (unit < 1) unit = 1;
+
+    c->type = *(p + 0);
+    int32_t k_q16 = slope * LOG10_2_Q16;  // raw_fx3 per octave, Q16 (signed)
+
+    if (c->type == MIMIC_LOG_TYPE_LOG) {
+        // seg[i] = K * log2(1 + i/64), oct[e] = Vref + K * (e - log2(unit / 8)), in raw << 7
+        for (int i = 0; i <= (1 << LOG_SEG_BITS); i++) {
+            c->seg[i] = (int32_t)(((int64_t)k_q16 * log2_1pf_q15[i]) >> 27);
+        }
+        int32_t log2_unit_q15 = Log2Q15((uint32_t)unit) - (RAW_FX3_FRAC_BITS << 15);
+        int32_t vref_q = pipeline.vref_raw_fx3 << (LOG_OUT_FRAC_BITS - RAW_FX3_FRAC_BITS);
+        for (int e = 0; e < 12; e++) {
+            c->oct[e] = vref_q + (int32_t)(((int64_t)k_q16 * ((e << 15) - log2_unit_q15)) >> 27);
+        }
+    } else {
+        // seg[i] = unit * 2^(i/64) in raw << 7; t = (x - Vref) / K in octaves
+        for (int i = 0; i <= (1 << LOG_SEG_BITS); i++) {
+            c->seg[i] = (int32_t)(((int64_t)unit * exp2_f_q15[i]) >> 11);
+        }
+        int32_t k_abs = (k_q16 < 0) ? -k_q16 : k_q16;
+        c->d_lim     = (int32_t)(((int64_t)ANTILOG_MAX_OCT * k_abs) >> 16) + 1;
+        c->inv_k_q20 = (int32_t)(((int64_t)1 << 36) / k_q16);
+    }
+}
+
+// raw_fx3 -> integer raw code
+static inline int32_t Fx3FloorToRaw(int32_t v) { return v >> RAW_FX3_FRAC_BITS; }
+static inline int32_t Fx3CeilToRaw(int32_t v)  { return (v + (1 << RAW_FX3_FRAC_BITS) - 1) >> RAW_FX3_FRAC_BITS; }
+static inline int32_t Fx3RoundToRaw(int32_t v) { return (v + RAW_FX3_HALF) >> RAW_FX3_FRAC_BITS; }
+
+// Limit for a value that is shifted left by exp afterwards, so that the result stays
+// within +/-OUT_GUARD_RAW_FX3 (saturates in the output stage, never overflows).
+static int32_t MantLimitForExp(int32_t exp) {
+    if (exp <= 0) return INT32_MAX;
+    if (exp >= 31) return 1;
+    int32_t lim = OUT_GUARD_RAW_FX3 >> exp;
+    return (lim > 0) ? lim : 1;
+}
+
 void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
     uint8_t previous_mode = pipeline.current_mode;
 
@@ -414,15 +593,28 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
     pipeline.current_mode = config->mode_id;
     pipeline.output_route = config->output_route;
 
+    // 1. Common Vref (an input: changing it does not reset any state)
+    int32_t vref = config->vref_raw_fx3;
+    if (vref < 0) vref = 0;
+    if (vref > MIMIC_RAW_FX3_MAX) vref = MIMIC_RAW_FX3_MAX;
+    pipeline.vref_raw_fx3       = vref;
+    pipeline.vref_round_raw_fx3 = vref + RAW_FX3_HALF;
+
     // 2. Global Decimation & Offset Parameters
     MimicDSP_SetDecimation(config->decimation_n);
 
+    //   final = (dsp_out * mult + offset_fx15) >> 15
+    //     normal  : gain * x + offset
+    //     inverted: 4095 - (gain * x + offset)
+    //   OUT_ROUND_RAW_FX15 (+0.5 LSB) turns the floor of the arithmetic shift into rounding.
+    int32_t offset_raw_fx15 = config->offset_raw_fx3 << (Q15_FRAC_BITS - RAW_FX3_FRAC_BITS);
     if (pipeline.global_flags & MIMIC_FLAG_INV_OUT) {
-        pipeline.out_mult_q15    = -config->gain_q15;
-        pipeline.out_offset_calc = MIMIC_ADC_MAX_VALUE - config->offset_raw; 
+        pipeline.out_mult_q1_15      = -config->gain_uq1_15;
+        pipeline.out_offset_raw_fx15 = ((int32_t)MIMIC_ADC_MAX_VALUE << Q15_FRAC_BITS)
+                                     - offset_raw_fx15 + OUT_ROUND_RAW_FX15;
     } else {
-        pipeline.out_mult_q15    = config->gain_q15; 
-        pipeline.out_offset_calc = config->offset_raw;
+        pipeline.out_mult_q1_15      = config->gain_uq1_15;
+        pipeline.out_offset_raw_fx15 = offset_raw_fx15 + OUT_ROUND_RAW_FX15;
     }
 
     // 3. Reset mode-specific state history upon mode transition
@@ -432,7 +624,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
 
         if (pipeline.current_mode == MIMIC_MODE_ID_DELAY) {
             for (uint32_t i = 0; i < DELAY_BUFFER_SIZE; i++) {
-                delay_buffer[i] = MIMIC_ADC_MID_VALUE;
+                delay_buffer_raw[i] = MIMIC_ADC_MID_VALUE;
             }
         }
     }
@@ -440,61 +632,84 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
     // 4. Parse Mode-Specific Payload
     const uint8_t *p = config->payload;
     switch (pipeline.current_mode) {
-        case MIMIC_MODE_ID_FILTER_BIQUAD:
-            dsp_ctx.bq.b0 = ParseS16(p + 0);
-            dsp_ctx.bq.b1 = ParseS16(p + 2);
-            dsp_ctx.bq.b2 = ParseS16(p + 4);
-            dsp_ctx.bq.a1 = ParseS16(p + 6);
-            dsp_ctx.bq.a2 = ParseS16(p + 8);
+        case MIMIC_MODE_ID_FILTER_BIQUAD: {
+            // States are kept: changing fc / Q / type while running is smooth
+            Svf_t *s = &dsp_ctx.svf;
+            uint32_t g_shift = p[3];
+            uint32_t e_shift = p[8];
+            if (g_shift > SVF_SHIFT_MAX) g_shift = SVF_SHIFT_MAX;
+            if (e_shift > SVF_SHIFT_MAX) e_shift = SVF_SHIFT_MAX;
+            s->type    = p[0];
+            s->g_mant  = ParseU16(p + 1);
+            s->g_shift = g_shift;
+            s->g_half  = (1 << g_shift) >> 1;
+            s->g1      = ParseU16(p + 4);
+            s->e_mant  = ParseU16(p + 6);
+            s->e_shift = e_shift;
+            s->e_half  = (1 << e_shift) >> 1;
+            s->k       = ParseU16(p + 9);
+            break;
+        }
+
+        case MIMIC_MODE_ID_FILTER_1ST:
+            dsp_ctx.filter1st.type        = *(p + 0);
+            dsp_ctx.filter1st.alpha_q0_15 = ParseS16(p + 1);
             break;
 
-        case MIMIC_MODE_ID_FILTER_1ST_LPF:
-        case MIMIC_MODE_ID_FILTER_1ST_HPF:
-            dsp_ctx.filter1st.alpha_q15 = ParseS16(p + 0);
+        case MIMIC_MODE_ID_PGA: {
+            int32_t exp = (int8_t)*(p + 2);
+            if (exp < 0) exp = 0;                       // gain mantissa already covers < 1
+            dsp_ctx.pga.gain_mant_q0_15 = ParseS16(p + 0);
+            dsp_ctx.pga.gain_exp        = exp;
+            dsp_ctx.pga.mant_lim        = MantLimitForExp(exp);
+            break;
+        }
+
+        case MIMIC_MODE_ID_COMPARATOR:
+            dsp_ctx.comp.type      = *(p + 0);
+            dsp_ctx.comp.upper_raw = Fx3FloorToRaw(ParseS16(p + 1));
+            dsp_ctx.comp.lower_raw = Fx3CeilToRaw(ParseS16(p + 3));
             break;
 
-        case MIMIC_MODE_ID_PGA:
-            dsp_ctx.pga.gain_fract_q15 = ParseS16(p + 0);
-            dsp_ctx.pga.gain_shift     = (int8_t)*(p + 2);
-            dsp_ctx.pga.offset_q15     = RawToQ15(ParseS16(p + 3));
+        case MIMIC_MODE_ID_MATH: {
+            int32_t exp = (int8_t)*(p + 3);
+            dsp_ctx.math.type = *(p + 0);
+            if (dsp_ctx.math.type == MIMIC_MATH_INTEGRAL && exp > 1) exp = 1;
+            dsp_ctx.math.scale_mant_q0_15 = ParseS16(p + 1);
+            dsp_ctx.math.scale_exp        = exp;
+            dsp_ctx.math.mant_lim         = MantLimitForExp(exp);
             break;
+        }
 
-        case MIMIC_MODE_ID_COMPARATOR_WIN:
-        case MIMIC_MODE_ID_COMPARATOR_SCHMITT:
-            dsp_ctx.comp.upper = ParseU16(p + 0);
-            dsp_ctx.comp.lower = ParseU16(p + 2);
+        case MIMIC_MODE_ID_SLEW_RATE_LIMITER: {
+            int32_t step = ParseS16(p + 0);
+            if (step < 0) step = 0;
+            dsp_ctx.slew.max_step_raw_ctr_fx4 = step << (CTR_FX4_FRAC_BITS - RAW_FX3_FRAC_BITS);
             break;
+        }
 
-        case MIMIC_MODE_ID_MATH_DERIVATIVE:
-        case MIMIC_MODE_ID_MATH_INTEGRAL:
-            dsp_ctx.math.scale_fract_q15 = ParseS16(p + 0);
-            dsp_ctx.math.scale_shift     = (int8_t)*(p + 2);
+        case MIMIC_MODE_ID_CLIPPER: {
+            int32_t upper = ParseS16(p + 0);
+            int32_t lower = ParseS16(p + 2);
+            dsp_ctx.clipper.upper_raw     = Fx3FloorToRaw(upper);
+            dsp_ctx.clipper.lower_raw     = Fx3CeilToRaw(lower);
+            dsp_ctx.clipper.upper_out_raw = Fx3RoundToRaw(upper);
+            dsp_ctx.clipper.lower_out_raw = Fx3RoundToRaw(lower);
             break;
+        }
 
-        case MIMIC_MODE_ID_SLEW_RATE_LIMITER:
-            dsp_ctx.math.scale_fract_q15 = ParseS16(p + 0);
-            break;
-
-        case MIMIC_MODE_ID_CLIPPER:
-            dsp_ctx.clipper.upper = ParseS16(p + 0);
-            dsp_ctx.clipper.lower = ParseS16(p + 2);
-            break;
-
-        case MIMIC_MODE_ID_NONLINEAR_LUT:
-            nonlinear_lut_type = (uint8_t)*(p + 0);
-            switch (nonlinear_lut_type) {
-                case MIMIC_LUT_LOG:     active_lut_ptr = lut_log; break;
-                case MIMIC_LUT_ANTILOG: active_lut_ptr = lut_antilog; break;
-            }
+        case MIMIC_MODE_ID_LOG:
+            ConfigureLog(p);    // depends on Vref: rebuilt on every update
             break;
 
         case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:
-            dsp_ctx.envelope.decay_q15 = ParseS16(p + 0);
-            dsp_ctx.envelope.polarity  = (uint8_t)*(p + 2);
+            dsp_ctx.envelope.decay_q0_15 = ParseS16(p + 0);
+            dsp_ctx.envelope.polarity    = (uint8_t)*(p + 2);
             break;
 
-        case MIMIC_MODE_ID_RECTIFIER_FULL:
-            dsp_ctx.rect.vref_raw = ParseS16(p + 0);
+        case MIMIC_MODE_ID_RECTIFIER:
+            dsp_ctx.rect.type     = (uint8_t)*(p + 0);
+            dsp_ctx.rect.polarity = (uint8_t)*(p + 1);
             break;
 
         case MIMIC_MODE_ID_SAMPLE_AND_HOLD:
@@ -523,16 +738,13 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample(uin
     } else {
         switch (pipe->current_mode) {
             case MIMIC_MODE_ID_PGA:                 dsp_out = ProcessPga(adc_val); break;
-            case MIMIC_MODE_ID_FILTER_1ST_LPF:      dsp_out = ProcessFilterLpf(adc_val); break;
-            case MIMIC_MODE_ID_FILTER_1ST_HPF:      dsp_out = ProcessFilterHpf(adc_val); break;
-            case MIMIC_MODE_ID_COMPARATOR_WIN:      dsp_out = ProcessPrsWindow(adc_val); break;
-            case MIMIC_MODE_ID_COMPARATOR_SCHMITT:  dsp_out = ProcessComparatorSchmitt(adc_val); break;
+            case MIMIC_MODE_ID_FILTER_1ST:          dsp_out = ProcessFilter1st(adc_val); break;
+            case MIMIC_MODE_ID_COMPARATOR:          dsp_out = ProcessComparator(adc_val); break;
             case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:   dsp_out = ProcessEnvelopeFollower(adc_val); break;
             case MIMIC_MODE_ID_CLIPPER:             dsp_out = ProcessClipper(adc_val); break;
-            case MIMIC_MODE_ID_NONLINEAR_LUT:       dsp_out = ProcessNonlinearLut(adc_val); break;
-            case MIMIC_MODE_ID_MATH_DERIVATIVE:     dsp_out = ProcessMathDerivative(adc_val); break;
-            case MIMIC_MODE_ID_MATH_INTEGRAL:       dsp_out = ProcessMathIntegral(adc_val); break;
-            case MIMIC_MODE_ID_RECTIFIER_FULL:      dsp_out = ProcessRectifierFull(adc_val); break;
+            case MIMIC_MODE_ID_LOG:                 dsp_out = ProcessLog(adc_val); break;
+            case MIMIC_MODE_ID_MATH:                dsp_out = ProcessMath(adc_val); break;
+            case MIMIC_MODE_ID_RECTIFIER:           dsp_out = ProcessRectifier(adc_val); break;
             case MIMIC_MODE_ID_SLEW_RATE_LIMITER:   dsp_out = ProcessSlewRateLimiter(adc_val); break;
             case MIMIC_MODE_ID_SAMPLE_AND_HOLD:     dsp_out = ProcessSampleAndHold(adc_val); break;
             case MIMIC_MODE_ID_DELAY:               dsp_out = ProcessDelay(adc_val); break;
@@ -540,8 +752,8 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample(uin
         }
     }
 
-    // Post-Processing: Branchless inversion and dynamic DC Offset insertion
-    int32_t final_out = ((dsp_out * pipe->out_mult_q15) >> FRACTIONAL_BITS_Q15) + pipe->out_offset_calc;
+    // Post-Processing: inversion, DC offset (user + calibration) and rounding in one step
+    int32_t final_out = (dsp_out * pipe->out_mult_q1_15 + pipe->out_offset_raw_fx15) >> Q15_FRAC_BITS;
 
     // Branchless fixed-point saturation logic (Clips dynamically to 0 - 4095)
     if ((uint32_t)final_out > MIMIC_ADC_MAX_VALUE) {
@@ -560,21 +772,29 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample(uin
 }
 
 void MimicDSP_SetDecimation(uint8_t decimation_n) {
+    if (decimation_n > MIMIC_DECIMATION_N_MAX) {
+        decimation_n = MIMIC_DECIMATION_N_MAX;
+    }
     uint32_t new_mask = (1U << decimation_n) - 1;
 
     if (new_mask == decimation_mask) {
         return;
     }
 
+    // Value currently on the output (called while the engine is stopped)
+    int32_t hold_raw = (decimation_mask == 0) ? y_new_raw
+                                              : (out_raw_fx16 >> FX16_FRAC_BITS);
+
     decimation_mask  = new_mask;
     decimation_shift = decimation_n;
 
+    // Restart the interpolation from the held output (no jump)
     adc_accumulator     = 0;
     decimation_count    = 0;
-    y_old               = MIMIC_ADC_MID_VALUE;
-    y_new               = MIMIC_ADC_MID_VALUE;
-    delta_step_q16      = 0;
-    current_dac_val_q16 = (MIMIC_ADC_MID_VALUE << Q16_SHIFT);
+    y_old_raw           = hold_raw;
+    y_new_raw           = hold_raw;
+    delta_step_raw_fx16 = 0;
+    out_raw_fx16        = hold_raw << FX16_FRAC_BITS;
 }
 
 // Configuration for Test and Debug Features
@@ -612,24 +832,25 @@ static inline __attribute__((always_inline)) void SampleBody(void) {
     if (decimation_mask == 0) {
         MimicDevice_SetAdcVal_ISR(raw_val);
         out_raw = MimicDSP_ProcessSample(raw_val);
+        y_new_raw = (int32_t)out_raw;   // Current output, kept for a later decimation change
     } else {
         adc_accumulator += raw_val;
         decimation_count++;
 
-        current_dac_val_q16 += delta_step_q16;
-        out_raw = (uint32_t)(current_dac_val_q16 >> Q16_SHIFT);
+        out_raw_fx16 += delta_step_raw_fx16;
+        out_raw = (uint32_t)(out_raw_fx16 >> FX16_FRAC_BITS);
 
         if ((decimation_count & decimation_mask) == 0) {
             uint32_t x_in = adc_accumulator >> decimation_shift;
             MimicDevice_SetAdcVal_ISR(x_in); 
 
-            y_old = y_new;
-            y_new = MimicDSP_ProcessSample(x_in);
+            y_old_raw = y_new_raw;
+            y_new_raw = MimicDSP_ProcessSample(x_in);
 
-            int32_t diff_q16 = (y_new - y_old) << Q16_SHIFT;
-            delta_step_q16 = diff_q16 >> decimation_shift;
+            int32_t diff_raw_fx16 = (y_new_raw - y_old_raw) << FX16_FRAC_BITS;
+            delta_step_raw_fx16 = diff_raw_fx16 >> decimation_shift;
 
-            current_dac_val_q16 = y_old << Q16_SHIFT;
+            out_raw_fx16 = y_old_raw << FX16_FRAC_BITS;
             adc_accumulator = 0;
         }
     }

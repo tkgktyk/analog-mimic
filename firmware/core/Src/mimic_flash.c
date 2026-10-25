@@ -35,12 +35,12 @@
 #define MIMIC_FLASH_CALIB_PAGE_ADDR  ((FLASH_END) - (FLASH_PAGE_SIZE) + 1)
 
 // Note: Flash offset addresses must be strictly aligned to even boundaries
-#define MIMIC_FLASH_GAIN_Q15_ADDR ((MIMIC_REG_NVM_GAIN_Q15) - (MIMIC_REG_NVM_START))
+#define MIMIC_FLASH_GAIN_ADDR     ((MIMIC_REG_NVM_GAIN) - (MIMIC_REG_NVM_START))
 #define MIMIC_FLASH_OFFSET_ADDR   ((MIMIC_REG_NVM_OFFSET) - (MIMIC_REG_NVM_START))
 
 // Default fallback values when flash is empty (0xFFFF)
-#define MIMIC_DEFAULT_GAIN_Q15    (1 << 15)
-#define MIMIC_DEFAULT_OFFSET      0
+#define MIMIC_DEFAULT_GAIN_UQ1_15     (1 << 15)  // 1.0
+#define MIMIC_DEFAULT_OFFSET_RAW_FX3  MIMIC_FLASH_DEFAULT_VALUE_TWO_BYTES
 
 // =========================================================
 // Private Flash Operations
@@ -129,32 +129,27 @@ static bool WriteCalibrationData(uint32_t page_offset, const void *data, size_t 
 // Public API Implementations
 // =========================================================
 
-bool MimicFlash_WriteGainQ15Data(uint16_t gain) {
-    return WriteCalibrationData(MIMIC_FLASH_GAIN_Q15_ADDR, &gain, sizeof(gain));
+bool MimicFlash_WriteGainData(uint16_t gain_uq1_15) {
+    return WriteCalibrationData(MIMIC_FLASH_GAIN_ADDR, &gain_uq1_15, sizeof(gain_uq1_15));
 }
 
-uint16_t MimicFlash_ReadGainQ15Data(void) {
+uint16_t MimicFlash_ReadGainData(void) {
     // Read directly from Flash space using pointer arithmetic
-    uint16_t gain_q15 = *((uint16_t *)(MIMIC_FLASH_CALIB_PAGE_ADDR + MIMIC_FLASH_GAIN_Q15_ADDR));
+    uint16_t gain_uq1_15 = *((uint16_t *)(MIMIC_FLASH_CALIB_PAGE_ADDR + MIMIC_FLASH_GAIN_ADDR));
     
-    if (gain_q15 == MIMIC_FLASH_DEFAULT_VALUE_TWO_BYTES) {
-        gain_q15 = MIMIC_DEFAULT_GAIN_Q15;
+    if (gain_uq1_15 == MIMIC_FLASH_DEFAULT_VALUE_TWO_BYTES) {
+        gain_uq1_15 = MIMIC_DEFAULT_GAIN_UQ1_15;
     }
     
-    return gain_q15;
+    return gain_uq1_15;
 }
 
-bool MimicFlash_WriteOffsetData(int16_t offset) {
-    return WriteCalibrationData(MIMIC_FLASH_OFFSET_ADDR, &offset, sizeof(offset));
+bool MimicFlash_WriteOffsetData(int16_t offset_raw_fx3) {
+    return WriteCalibrationData(MIMIC_FLASH_OFFSET_ADDR, &offset_raw_fx3, sizeof(offset_raw_fx3));
 }
 
 int16_t MimicFlash_ReadOffsetData(void) {
-    // Read directly from Flash space using pointer arithmetic
-    uint16_t raw = *((uint16_t *)(MIMIC_FLASH_CALIB_PAGE_ADDR + MIMIC_FLASH_OFFSET_ADDR));
-    
-    if (raw == MIMIC_FLASH_DEFAULT_VALUE_TWO_BYTES) {
-        raw = MIMIC_DEFAULT_OFFSET;
-    }
-    
-    return (int16_t)raw;
+    // No "erased" check: 0xFFFF is a valid offset (-1 = -1/8 LSB in raw_fx3),
+    // and an erased page reads as -1/8 LSB, which is negligible.
+    return *((int16_t *)(MIMIC_FLASH_CALIB_PAGE_ADDR + MIMIC_FLASH_OFFSET_ADDR));
 }

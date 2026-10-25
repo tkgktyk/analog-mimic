@@ -39,12 +39,13 @@ extern "C" {
 
 /**
  * @brief Encapsulates the complete configuration state required by the DSP core.
- * @note  Members are ordered by data size (32-bit first, then 8-bit) to minimize 
+ * @note  Members are ordered by data size (32-bit first, then 8-bit) to minimize
  *        implicit compiler memory padding and optimize alignment.
  */
 typedef struct {
-    int32_t            gain_q15;                        /**< Global Q15 fractional gain multiplier */
-    int32_t            offset_raw;                      /**< Global output raw DC offset */
+    int32_t            gain_uq1_15;                     /**< Output gain calibration, uq1_15 (1.0 = 32768) */
+    int32_t            offset_raw_fx3;                  /**< Output DC offset, raw_fx3 (user + calibration) */
+    int32_t            vref_raw_fx3;                    /**< Common reference voltage (Vref), raw_fx3 */
     uint8_t            mode_id;                         /**< Active operational mode ID */
     MimicOutputRoute_t output_route;                    /**< Physical output path (OPEN, ANALOG, DIGITAL) */
     uint8_t            global_flags;                    /**< System-wide control flags (e.g., inversion, test pulse) */

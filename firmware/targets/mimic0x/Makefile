@@ -22,9 +22,6 @@ DAC_SUFFIX ?=
 # Hardware version (Hexadecimal): "0x" + "01" -> 0x01
 HW_VERSION_HEX = 0x$(HW_ID)
 
-# Firmware version (Decimal): Commit count modulo 256
-FW_VERSION_DEC ?= $(shell git rev-list --count HEAD 2>/dev/null | awk '{print $$1%256}')
-FW_VERSION_DEC := $(if $(FW_VERSION_DEC),$(FW_VERSION_DEC),0)
 
 # ==============================================================================
 # Output engine selection (DMA or CPU)
@@ -124,7 +121,6 @@ C_DEFS = \
 -DPY32F071xB \
 -DTARGET_$(BOARD_NAME) \
 -DMIMIC_HW_VERSION_VALUE=$(HW_VERSION_HEX) \
--DMIMIC_FW_VERSION_VALUE=$(FW_VERSION_DEC) \
 -DMIMIC_ENGINE_$(ENGINE)
 
 MCU = -mcpu=cortex-m0plus -mthumb
@@ -180,6 +176,10 @@ OBJECTS = $(C_OBJECTS) $(ASM_OBJECTS)
 
 $(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR) 
 	$(CC) -c $(CFLAGS) $< -o $@
+
+# mimic_device.c embeds the build date (__DATE__). Recompile it whenever any other
+# object is rebuilt, so the date always shows when the firmware last changed.
+$(BUILD_DIR)/mimic_device.o: $(filter-out $(BUILD_DIR)/mimic_device.o,$(OBJECTS))
 
 $(BUILD_DIR)/%.o: %.s Makefile | $(BUILD_DIR)
 	$(AS) -c $(CFLAGS) $< -o $@
