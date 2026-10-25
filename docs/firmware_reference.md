@@ -1,329 +1,221 @@
-
 # Firmware Reference
 
-This document provides a technical overview of the Analog Mimic firmware. It details the OtoHA execution framework, hardware resource allocations, internal DSP mechanics, and the I²C control interface, serving as a guide for users who wish to understand the core software pipeline.
+This document describes the Analog Mimic firmware: the sampling pipeline, the mapping to the MCU peripherals, the fixed-point arithmetic, and the I²C register interface. `firmware/core/Inc/mimic_registers.h` is the authoritative definition of the interface; this document follows it.
 
-## 1. Internal MCU Processing
+## 1. Sampling Pipeline
 
-The firmware pipeline executes sequentially within the hardware-locked Primary ISR to maintain absolute temporal determinism.
+Every sample period (200 kHz, 5 µs) the firmware runs the following chain in the primary ISR.
 
 ```
 [Analog In]
    ↓
-(1) ADC Read (12-bit Raw)
+(1) ADC conversion, started by the sampling timer (12-bit raw code)
    ↓
-(2) Mode-Specific DSP Core (32-bit state execution)
+(2) Decimation (optional): average 2^N samples, run (3)-(5) once per block
    ↓
-(3) Common Post-processing 1: Branchless DAC Code Inversion & DC Offset
+(3) Mode-specific DSP core (32-bit integer arithmetic)
    ↓
-(4) Common Post-processing 2: Fixed-point Saturation (Clamps strictly to 0 - 4095)
+(4) Output stage: calibration gain, inversion, DC offset (user + calibration), rounding
    ↓
-(5) DAC Preload (Next cycle output)
+(5) Saturation to 0 - 4095
+   ↓
+(6) Output preload: written at a fixed point of the next sample period
+    (DAC code on the analog route, GPIO level on the digital route)
    ↓
 [Analog Out]
-
 ```
+
+With decimation, the output between two processed samples is linearly interpolated.
+
+The value computed in one sample period is presented at a fixed point of the next one, so the output timing does not depend on how long the DSP core takes.
 
 ---
 
 ## 2. Hardware Resource Mapping
 
-Analog Mimic is built around the Puya Semiconductor PY32F071, a low-cost 72 MHz Arm Cortex-M0+ MCU. The continuous-time signal chain defined in the architecture is mapped directly to the MCU's internal peripherals.
+Analog Mimic is built around the Puya Semiconductor PY32F071, a 72 MHz Arm Cortex-M0+ MCU. The analog signal chain is built from the MCU's internal peripherals.
 
-### Peripheral Assignment Table
-
-| Hardware Resource | Internal Peripheral | Firmware Function / Mapping |
+| Function | Peripheral | Configuration |
 | --- | --- | --- |
-| **System Core Clock** | HSI Oscillator | Configured to 72 MHz via internal PLL. |
-| **Sampling Clock** | TIM3 (16-bit Advanced Timer) | Configured in up-counting mode to generate periodic Update Interrupts at exactly 300 kHz (Priority 0: Primary ISR). |
-| **Input Buffer** | OPA1 | Configured as a Hi-Z voltage follower. |
-| **Anti-Aliasing Filter (AAF)** | OPA3 | Configured as a 2nd-order Sallen-Key Low-Pass Filter ($Q = 0.5$, $f_c = 48.2$ kHz). |
-| **Analog Input Interface** | ADC1 (12-bit, Successive Approx.) | Mapped to internal channels or pins depending on the variant. Set to high-speed single-conversion mode triggered automatically by the timer. |
-| **Primary Analog Output** | DAC1 (12-bit, Buffered) | Wired directly to the output smoothing chain (AOUT). Driven by an immediate software trigger (SWTRIGR = 1) at the very first instruction of the Primary ISR, latching the pre-calculated code. |
-| **Anti-Imaging Filter (AIF)** | OPA2 | Configured as a 2nd-order Sallen-Key Low-Pass Filter ($Q = 0.5$, $f_c = 48.2$ kHz). |
-| **Host Communication** | I2C1 (Hardware Block) | Mapped to Scl/Sda lines for host-level runtime reconfiguration (Priority 1: Secondary ISR). |
+| **System clock** | HSI + PLL | 72 MHz. |
+| **Sampling clock** | TIM2 | 200 kHz (period 360 clocks). CH2 triggers the ADC. |
+| **Input buffer** | OPA1 | Voltage follower. |
+| **Anti-aliasing filter (AAF)** | OPA3 | 2nd-order Sallen-Key low-pass filter ($Q = 0.5$, $f_c = 48.2$ kHz). |
+| **ADC** | ADC1 (12-bit SAR) | Channel 9 (AAF output), triggered by TIM2 CH2. Reference: VCCA (ratiometric to VDD). |
+| **DAC** | DAC1 (12-bit, buffered) | Analog output route. |
+| **Anti-imaging filter (AIF)** | OPA2 | 2nd-order Sallen-Key low-pass filter ($Q = 0.5$, $f_c = 48.2$ kHz) driving AOUT. |
+| **Digital output route** | GPIO (AOUT pin) | Comparator output. OPA2 and the DAC are stopped while this route is active. |
+| **Host interface** | I2C1 | 100 kHz, 7-bit address 0x40. Lower-priority interrupt. |
+
+The whole analog chain from AIN to AOUT (AAF, sampling and AIF) has a −3 dB bandwidth of 20 kHz.
+
+### Output engines (build option)
+
+The agent that writes the output is selected at build time (`ENGINE`).
+
+* **DMA (default):** the ADC end-of-conversion requests a DMA transfer that writes the preloaded output word to the DAC (or to the GPIO set/reset register). The DMA transfer-complete interrupt then runs the DSP for the new sample and prepares the next output word.
+* **CPU:** the ADC interrupt writes the preloaded output (DAC software trigger or GPIO write) as its first action, then runs the DSP.
+
+In both engines the primary ISR and the vector table run from SRAM (`.ramfunc`), and SysTick is suspended while the engine runs.
+
+### Cycle budget
+
+At 72 MHz and 200 kHz, one sample period is **360 CPU cycles**. The DSP core and the output stage must leave a margin (about 60 - 70 cycles) for the I²C interrupt and the main loop. The peak cycle count of the primary ISR can be read from the `CPU_CYCLES` register.
 
 ---
 
-<!-- ## 3. OtoHA Execution Framework
+## 3. Fixed-Point Arithmetic
 
-Analog Mimic achieves hardware-like temporal determinism on a resource-constrained microcontroller by implementing the OtoHA (Optimization toward Hardware-deterministic Architecture) framework. To balance strict phase-accuracy with topological reconfigurability, the firmware bifurcates execution into two distinct states.
+The DSP core uses no floating point. All states and arithmetic are 32-bit integers (`int32_t`), and every product fits in 32 bits, because the Cortex-M0+ has no 32 × 32 → 64-bit multiply instruction. Coefficients are calculated by the host (Arduino library) and sent over I²C; the firmware only parses them.
 
-### Hardware and Software Mapping
+### Number formats
 
-```
-+---------------------------------------------------------------------------------+
-|                                 MCU EXECUTION                                   |
-+---------------------------------------------------------------------------------+
-|  [Deterministic State]                         [Non-Deterministic State]        |
-|                                                                                 |
-|  Primary ISR                                   Secondary ISR      Main Loop     |
-|  (Priority 0)                                  (Priority 1)       (Background)  |
-|       │                                             │                  │        |
-|       ▼                                             ▼                  ▼        |
-|  Tied directly to:                             Tied to:           Tied to:      |
-|  300 kHz Hardware Timer                        Asynchronous       Parameter     |
-|  & Periodic ADC Sampling                       I2C Transactions   Decoding &    |
-|                                                                   Q15 Scaling   |
-+---------------------------------------------------------------------------------+
+| Name | Meaning |
+| --- | --- |
+| `raw` | ADC / DAC code. 0 = 0 V, 4096 = VDD (integer, 0 - 4095). 1 LSB = VDD / 4096. |
+| `raw_fx3` | `raw` with 3 fractional bits (1 LSB = 8), signed 16-bit, -4096 to +4095.875 LSB. **Every voltage at the interface uses this format.** |
+| `raw_vref_fx3` | `raw_fx3` relative to Vref (internal). |
+| `q0_15` | Signed coefficient, 15 fractional bits (-1.0 to < 1.0). |
+| `uq1_15` | Unsigned gain, 15 fractional bits (0 to < 2.0, 1.0 = 32768). |
+| `mant` / `exp` | value = mant (`q0_15`) × 2^exp (exp: int8 shift). |
 
-```
+All multi-byte values are big-endian.
 
-### Deterministic State (Mapped to Primary ISR & 300 kHz ADC Sampling)
+Voltages are ratiometric: the ADC and the DAC both use VDD as the reference. The library converts millivolts to `raw_fx3` as `mV × 4096 × 8 / VDD_mV` (rounded), using the supply voltage given to the constructor.
 
-* **Hardware Binding:** This state is implemented inside the Primary ISR, which is tied directly to a hardware timer interrupt set to a strict 300 kHz sampling rate (3.3 µs sample period). This timer commands the ADC to initiate conversions at absolute periodic intervals.
-* **Execution Pipeline:** Executes the time-critical mixed-signal chain. Upon the 300 kHz hardware trigger, the CPU bypasses standard interrupt latencies to issue an immediate software trigger to the DAC (presenting the pre-calculated analog code from the previous sample). It then reads the newly converted 12-bit raw value from the ADC, routes it through the active 32-bit promoted DSP emulation core, and performs common post-processing (branchless inversion, offset, and clamping) to preload the DAC for the next cycle.
-* **Zero-Jitter Optimizations:** To guarantee sub-clock execution determinism (<13 ns jitter) across the 300 kHz ADC boundary, the NVIC vector table and the entire Primary ISR instruction routine are moved to zero-wait-state SRAM via the `.ramfunc` attribute. Active emulation explicitly suspends asynchronous system background tasks (such as the standard SysTick handler) to prevent nested preemption.
+### Common reference (Vref)
 
-### Non-Deterministic State (Mapped to I²C Interrupts & Main Loop)
+Vref is an input of the module (default VDD / 2, limited to 0 V - VDD). Modes with a signal center work as
 
-* **Hardware Binding:** This state handles external host communication and is bifurcated into the I²C peripheral interrupt (Secondary ISR) and the background Main Loop.
-* **Execution Pipeline:** Manages topological and parameter updates. When a host microcontroller (e.g., an Arduino) issues a configuration command, the hardware I²C interrupt (Secondary ISR) triggers at a lower priority (Priority 1) to capture incoming payload bytes into a temporary data buffer without interrupting the active Primary ISR. Once the transfer completes, the background Main Loop takes over to decode the commands, translate human-readable physical parameters (such as cutoff frequencies in Hz or decay times in microseconds) into digital raw values or Q15 fixed-point coefficients, and safely hot-swaps the DSP routing mode.
+$$y = V_{ref} + H(x - V_{ref})$$
 
-### Cycle Budget Allocation
+Changing Vref does not reset any state; for example, a slow HPF settles to the new Vref with its own time constant.
 
-Operating a 72 MHz Cortex-M0+ core at a 300 kHz sampling rate compresses the total single-sample computational window into a strict budget of 240 clock cycles per sample.
+* **Uses Vref:** 1st-order filter, Biquad, PGA, envelope follower, derivative / integral, rectifier, and the bipolar side of LOG.
+* **Absolute (0 V based):** comparator and clipper thresholds, the LOG input and the ANTILOG output.
+* **No signal center:** bypass, slew rate limiter, sample & hold, delay.
 
-```
-5 µs Sample Period @ 72 MHz Core Clock
-|←───────────────────────── 240 Clock Cycles ─────────────────────────→|
-┌───────────────────────────────────────────────┬──────────────────────┐
-│ Core DSP Execution                            │ Required Slack       │
-│ (e.g., Fixed-Point Emulation Routine)         │ (60 - 70 Cycles)     │
-└───────────────────────────────────────────────┴──────────────────────┘
-                                                ▲
-                                                └── Mapped to:
-                                                    - I2C ISR Overhead
-                                                    - Main Loop Decoding
+### Output stage
 
-```
+The output stage combines the calibration gain, the inversion, the DC offsets and the rounding in one multiply-add:
 
-* **DSP Execution:** Highly optimized fixed-point routines execute inside the Primary ISR, consuming a predictable chunk of the sample budget.
-* **Slack Margin:** The framework rigorously maintains a required slack margin of 60 to 70 clock cycles outside of the core DSP execution. This deterministic cycle reserve is dedicated entirely to non-DSP operations—specifically handling the I²C Secondary ISR communication overhead and allowing the background Main Loop to calculate new filter coefficients before the next WFI (Wait-For-Interrupt) synchronization boundary.
+$$\text{out} = \left\lfloor \frac{y \cdot G + O}{2^{15}} \right\rfloor$$
 
---- -->
+where *G* is the calibration gain (`uq1_15`, negative when the output is inverted) and *O* holds the user offset and the calibration offset (`raw_fx3`, scaled to 15 fractional bits) plus 0.5 LSB for rounding. The result is saturated to 0 - 4095.
 
-## 4. DSP Core & Fixed-Point Arithmetic
+### Calibration
 
-To maximize efficiency within the 240-cycle budget, the firmware completely avoids runtime floating-point arithmetic. All mathematical emulation blocks are implemented using a 32-bit promoted Q15 fixed-point representation.
-
-### Fixed-Point Format & 32-bit Promotion
-
-In the Q15 format, a signed integer represents a fractional value in the range $[-1.0, 1.0 - 2^{-15}]$:
-
-$$\text{Value}_{\text{Float}} = \frac{\text{Internal integer}}{32768}$$
-
-To eliminate memory alignment padding gaps and avoid redundant CPU cast instructions on the 32-bit Cortex-M0+ architecture, all internal DSP states and arithmetic operations are natively promoted to `int32_t` (`FRACTIONAL_BITS_Q15 = 15`).
-
-* **Addition / Subtraction:** Executed natively using 32-bit registers.
-* **Multiplication:** Performed using native 32-bit arithmetic. The 32-bit intermediate product is immediately shifted right by 15 bits (`>> 15`) to maintain the Q15 fractional scale, without dropping back to 16 bits until the final DAC bounds clamping.
-
-### Parameter Processing & Scaling
-
-When a host passes a physical parameter (such as a cutoff frequency in Hz or an integration time constant in microseconds) over I²C, the firmware does not use these values directly inside the Primary ISR. Instead, the Secondary ISR intercepts the parameters and converts them into normalized digital coefficients (such as $b_0, b_1, a_1$ coefficients or pre-calculated decay multipliers) using a background fixed-point conversion library.
-
-* **Voltage Inputs (mV to Raw 12-bit ADC/DAC Codes):**
-* Unsigned:
-
-$$\text{Raw} = \frac{\text{mV} \times 4095}{V_{DD\_mV}}$$
-
-
-* Signed (Centered around $V_{DD}/2$ mid-rail):
-
-$$\text{Raw}_{\text{Signed}} = \frac{\text{mV} \times 2048}{V_{DD\_mV}/2}$$
-
-
-
-
-* **Frequency Inputs ($f_c$ in Hz to Biquad Coeffs):**
-Pre-warped digital angular frequencies $\omega_0 = 2\pi f_c / f_s$ are mapped to Q15 filter coefficients using optimized Taylor-series polynomial approximations for sine and cosine.
-
-### Parameter Specification & Payload Types Table
-
-When the host configures a DSP mode, it sends parameters over I²C using specific data types. The following table defines these payload types, classifying how human-readable physical units are translated into the raw bytes utilized by the DSP core.
-
-| Payload Type | Logical Parameter | User/Host Unit | Hardware / Internal Mapping |
-| --- | --- | --- | --- |
-| **S16** *(Signed 16-bit)* | Q15 Coefficient (Freq $f_c$, Time Const $\tau$, Gain) | Hz, $\mu$s, or Float | Converted by the host into Q15 fractional format $[-1.0, 1.0)$. Used internally for digital filters ($b_n, a_n$), integration/decay factors, and fractional scaling. |
-| **S16 / U16** *(16-bit Integer)* | Raw ADC Code / Offset (Threshold, $V_{\text{ref}}$, DC Offset) | mV | Transformed by the host from physical voltage to a 12-bit raw integer $[0 - 4095]$. U16 is typically used for absolute thresholds, while S16 is used for offsets and clipping limits. |
-| **S8** *(Signed 8-bit)* | Bit-Shift Multiplier (Coarse Gain) | Integer | Used in conjunction with Q15 fractional multipliers. Performs fast coarse scaling via bit-shifting (e.g., $\ll 2$ for $4\times$ gain, or $\gg 1$ for attenuation). |
-| **U16** *(Unsigned 16-bit)* | Sample Count (Delay time, S&H period) | Samples (Integer) | Represents an exact number of 300 kHz clock cycles. Used directly for delay buffer sizing and downsampling counters. |
-| **U8** *(Unsigned 8-bit)* | Flag / Enumeration (Polarity, LUT Type) | Boolean / Enum | Simple 1-byte selection codes. Maps to conditional branching flags (e.g., peak vs. trough) or Look-Up Table target pointers. |
+The gain and offset calibration values are stored in flash (NVM) and loaded at start-up. They correct the combined error of the input and output signal chains (measured from AIN to AOUT in bypass mode); the ADC and the DAC are not calibrated separately. A module that has not been calibrated uses gain 1.0 and offset 0. See the `NVM_*` registers and the commands below.
 
 ---
 
-## 5. I²C Interface & Mode Specifications
+## 4. I²C Interface
 
-The internal topology of the Analog Mimic is fully reconfigurable at runtime via an 8-bit memory-mapped I²C register interface.
+The module is an I²C target at address 0x40 (7-bit; the library adds a jumper offset of 0 - 15). Registers are 8-bit wide and addressed with auto-increment. Registers 0x00 - 0x0F are read-only; 0x10 - 0x3F are kept in RAM and can be read back.
 
-### Register Map Overview
+### Register map
 
-The device utilizes a fixed memory map bridging host interactions and the internal DSP state machine. Registers 0x00 through 0x1F reside in physical SRAM (`mimic_device.registers`), whereas telemetry addresses (0x20+) are virtual and dynamically latched upon host read requests to guarantee thread safety.
-
-| Address | Register Name | Access | Width | Description |
+| Address | Name | Access | Format | Description |
 | --- | --- | --- | --- | --- |
-| **0x00** | MIMIC_REG_GLOBAL_FLAGS | R/W | 8-bit | System overrides. Bit 7 (0x80): Output Invert, Bit 6 (0x40): Output Open (Hi-Z), Bit 5 (0x20): Servo Enable. |
-| **0x01** | MIMIC_REG_OUTPUT_OFFSET_H | R/W | 8-bit | MSB of global DC offset applied universally post-DSP. |
-| **0x02** | MIMIC_REG_OUTPUT_OFFSET_L | R/W | 8-bit | LSB of global DC offset. |
-| **0x10** | MIMIC_REG_MODE_SELECT | R/W | 8-bit | Selects the active DSP routing topology (Mode ID). |
-| **0x11+** | MIMIC_REG_PAYLOAD_START | R/W | Block | Mode-specific parameter buffer. Interpreted based on MODE_SELECT. |
-| **0x20** | MIMIC_REG_STATUS | R/C | 8-bit | System Status Flags (Bit 0: Ready, Bit 1: Saturation, Bit 2: I2C Error, Bit 3: ADC Over Error). Cleared on read. |
-| **0x21** | MIMIC_REG_ADC_VAL_H | R | 8-bit | MSB of the live 12-bit ADC tracking conversion. |
-| **0x22** | MIMIC_REG_ADC_VAL_L | R | 8-bit | LSB of the live 12-bit ADC conversion. |
-| **0x23** | MIMIC_REG_CPU_CYCLES_H | R/C | 8-bit | MSB of peak execution cycles per sample. Cleared on read. |
-| **0x24** | MIMIC_REG_CPU_CYCLES_L | R/C | 8-bit | LSB of peak execution cycles per sample. |
+| 0x00 | `SYSTEM_ID` | R | uint8 | WHO_AM_I, 0x4D (`'M'`). |
+| 0x01 | `SYSTEM_HW_VERSION` | R | uint8 | Hardware version. |
+| 0x02 - 0x05 | `SYSTEM_BUILD_DATE` | R | uint32 | Firmware build date, hex `0xYYYYMMDD` (e.g. 0x20261025). |
+| 0x06 - 0x09 | `SYSTEM_UID` | R | uint32 | Unit ID: 32-bit FNV-1a hash of the MCU unique ID. |
+| 0x0A | `SYSTEM_STATUS` | R/C | flags | Bit 0: ready, bit 1: signal saturation, bit 2: I²C error, bit 3: ADC overrun. Error bits are cleared on read. |
+| 0x0B - 0x0C | `SYSTEM_ADC_VAL` | R | uint16 | Latest ADC code (latched on the high-byte read). |
+| 0x0D - 0x0E | `SYSTEM_CPU_CYCLES` | R/C | uint16 | Peak cycles of the primary ISR since the last read. |
+| 0x10 | `GLOBAL_FLAGS` | R/W | flags | Bit 7: invert output, bit 6: output open (Hi-Z), bit 4: servo enable (1x series only, reserved). |
+| 0x11 | `GLOBAL_DECIMATION_N` | R/W | uint8 | Processing rate = 200 kHz / 2^N, N = 0 - 16 (larger values are clamped). |
+| 0x12 - 0x13 | `GLOBAL_OFFSET` | R/W | int16 `raw_fx3` | User output offset. |
+| 0x14 - 0x15 | `GLOBAL_VREF` | R/W | int16 `raw_fx3` | Common reference voltage (default VDD / 2). |
+| 0x20 | `MODE_ID` | R/W | uint8 | Active mode (see below). |
+| 0x21 - 0x2F | `MODE_PAYLOAD` | R/W | block | Mode parameters. |
+| 0x30 - 0x31 | `NVM_GAIN` | R/W | uint16 `uq1_15` | Output gain calibration. |
+| 0x32 - 0x33 | `NVM_OFFSET` | R/W | int16 `raw_fx3` | Output offset calibration. |
+| 0x40 | `CMD_PORT` | W | uint8 | Command: 0xA5 = save the NVM registers to flash, 0x5A = reload them from flash. |
 
-### Operational Mode Specifications
+### Applying a configuration
 
-The host triggers a pipeline reconfiguration by writing the target Mode ID to `MIMIC_REG_MODE_SELECT` (0x10), followed by mode-specific bytes starting at `MIMIC_REG_PAYLOAD_START` (0x11).
+The host writes the global registers, the mode ID and the payload; the firmware applies them as one update. During the update the output keeps its previous value. The output is disconnected (open) briefly only when the output route changes between the analog route (DAC) and the digital route (GPIO, comparator mode). Changing the mode resets the state of the mode; changing only the parameters of the current mode keeps its state.
 
-#### 0x00: DSP Bypass (`MIMIC_MODE_ID_BYPASS_DSP`)
+---
 
-* **Function:** Acts as a strictly deterministic voltage follower.
-* **Implementation:** The ADC input is routed directly to the DAC. Global pipeline effects (Inversion, Offset) remain active.
-* **Payload Parameters:** None.
+## 5. Modes
 
-#### 0x01: Programmable Gain Amplifier (`MIMIC_MODE_ID_PGA`)
+Payload offsets are relative to `MODE_PAYLOAD` (0x21). Modes that group several types have the type at byte [0].
 
-* **Function:** Scales the input signal linearly with respect to an arbitrary reference center.
-* **Implementation:** Combines a Q15 fractional multiplier for fine-tuning and a bit-shift operation for gross hardware-like amplification.
-* **Payload Parameters:** * 0x11-0x12 (S16): `gain_fract_q15` - Fractional gain multiplier.
-* 0x13 (S8): `gain_shift` - Coarse bit-shift multiplier.
-* 0x14-0x15 (S16): `offset_raw` - DC offset reference center (Raw ADC code). Internally mapped to Q15.
+| ID | Mode | Payload |
+| --- | --- | --- |
+| 0x00 | `BYPASS_DSP` | none |
+| 0x01 | `PGA` | [0-1] gain mant `q0_15`, [2] gain exp int8 (≥ 0) |
+| 0x02 | `FILTER_1ST` | [0] type (0: LPF, 1: HPF), [1-2] alpha `q0_15` |
+| 0x03 | `FILTER_BIQUAD` | [0] type, [1-10] coefficients (see below) |
+| 0x04 | `COMPARATOR` | [0] type (0: window, 1: Schmitt), [1-2] upper `raw_fx3`, [3-4] lower `raw_fx3` |
+| 0x05 | `CLIPPER` | [0-1] upper `raw_fx3`, [2-3] lower `raw_fx3` |
+| 0x06 | `RECTIFIER` | [0] type (0: full, 1: half), [1] polarity (0: positive, 1: negative) |
+| 0x07 | `ENVELOPE_FOLLOWER` | [0-1] decay `q0_15`, [2] polarity |
+| 0x08 | `LOG` | [0] type (0: log, 1: antilog), [1-2] slope `raw_fx3` per decade (signed), [3-4] unit `raw_fx3` (> 0) |
+| 0x09 | `MATH` | [0] type (0: derivative, 1: integral), [1-2] mant `q0_15`, [3] exp int8 |
+| 0x0A | `SLEW_RATE_LIMITER` | [0-1] maximum change per sample `raw_fx3` (≥ 0) |
+| 0x0B | `SAMPLE_AND_HOLD` | [0-1] period, [2-3] track time (samples, uint16) |
+| 0x0C | `DELAY` | [0-1] delay (samples, uint16, up to 4095) |
 
+### 0x00 Bypass
+Voltage follower. The output stage (calibration, inversion, offset) still applies.
 
+### 0x01 PGA
+$y = V_{ref} + G (x - V_{ref})$ with $G = \text{mant} \cdot 2^{\text{exp}}$.
 
-#### 0x02: 1st-Order Low-Pass Filter (`MIMIC_MODE_ID_FILTER_1ST_LPF`)
+### 0x02 1st-order filter
+RC low-pass or high-pass filter around Vref: a single-pole accumulator with $\alpha$ derived from $f_c$; the HPF output is the input minus the LPF state.
 
-* **Function:** Emulates a continuous-time RC low-pass filter.
-* **Implementation:** Standard infinite impulse response (IIR) single-pole accumulator.
-* **Payload Parameters:**
-* 0x11-0x12 (S16): `alpha_q15` - Decay/Integration coefficient derived from target $f_c$.
+### 0x03 Biquad (2nd-order filter)
+LPF, HPF, BPF (0 dB peak gain), notch, or unity (input passed through with the same CPU load, for profiling).
 
+Implemented as a **TPT (topology-preserving transform) state-variable filter**: the integrators of an analog state-variable filter are discretized with trapezoidal integration, which gives the same response as a bilinear-transform biquad (Audio EQ Cookbook). With $g = \tan(\pi f_c / f_s)$ and $k = 1/Q$:
 
+```
+v  = x - (k + g) s1 - s2,   hp = v / (1 + g k + g^2)
+bp = g hp + s1,   s1 = bp + g hp
+lp = g bp + s2,   s2 = lp + g bp
+LPF = lp,  HPF = hp,  BPF = k bp,  NOTCH = x - k bp
+```
 
-#### 0x03: 1st-Order High-Pass Filter (`MIMIC_MODE_ID_FILTER_1ST_HPF`)
+The signals are `raw_vref_fx3` and the two states have 15 fractional bits, so low cutoffs keep working without decimation. The coefficients are sent as 12-bit mantissas with shifts, so their resolution does not depend on $f_c$:
 
-* **Function:** Emulates an RC high-pass network (useful for automatic DC-blocking/servo tracking).
-* **Implementation:** Single-pole accumulator with the state subtracted from the raw input.
-* **Payload Parameters:**
-* 0x11-0x12 (S16): `alpha_q15` - Cutoff frequency coefficient.
+| Bytes | Content |
+| --- | --- |
+| [0] | type: 0 LPF, 1 HPF, 2 BPF, 3 notch, 4 unity |
+| [1-2], [3] | $g \cdot 2^{12}$ = mant >> shift (mant 2048 - 4095) |
+| [4-5] | $k + g$, 10 fractional bits |
+| [6-7], [8] | $e = 1 - 1/(1 + g k + g^2)$ = mant >> shift |
+| [9-10] | $k$, 11 fractional bits |
 
+Limits applied by the library: $f_s / 100000 \le f_c \le 0.24 f_s$ (2 Hz - 48 kHz at 200 kHz) and $0.1 \le Q \le 10$.
 
+### 0x04 Comparator
+Digital output route (GPIO). Window: HIGH when the input is above the upper or below the lower threshold. Schmitt: HIGH above the upper threshold, LOW below the lower threshold, otherwise unchanged.
 
-#### 0x04: 2nd-Order Biquad Filter (`MIMIC_MODE_ID_FILTER_BIQUAD`)
+### 0x05 Clipper
+Limits the input to the lower - upper range (absolute voltages).
 
-* **Function:** Universal 2nd-order digital filter configurable as LPF, HPF, BPF, or Notch.
-* **Implementation:** Direct Form II Transposed (DF2T). Highly unrolled loop loading coefficients aggressively into CPU registers. Dominates the processing budget (~212 cycles).
-* **Payload Parameters:**
-* 0x11-0x12 (S16): `b0` - Feedforward coefficient 0.
-* 0x13-0x14 (S16): `b1` - Feedforward coefficient 1.
-* 0x15-0x16 (S16): `b2` - Feedforward coefficient 2.
-* 0x17-0x18 (S16): `a1` - Feedback coefficient 1.
-* 0x19-0x1A (S16): `a2` - Feedback coefficient 2.
+### 0x06 Rectifier
+Folds the signal at Vref. Full-wave positive: $V_{ref} + |x - V_{ref}|$; half-wave positive: $\max(x, V_{ref})$; negative polarity mirrors both.
 
+### 0x07 Envelope follower
+Follows the peak of the input above Vref (positive) or below Vref (negative) and decays by the decay factor per sample. A decay factor of 1.0 holds the peak. The output is Vref plus the tracked magnitude for both polarities.
 
+### 0x08 LOG
+Logarithmic amplifier: $y = V_{ref} + \text{slope} \cdot \log_{10}(x / \text{unit})$. Antilogarithmic: $y = \text{unit} \cdot 10^{(x - V_{ref}) / \text{slope}}$. Implemented with per-mode tables (64 segments per octave) built when the mode is configured, and linear interpolation.
 
-#### 0x05: Window Comparator (`MIMIC_MODE_ID_COMPARATOR_WIN`)
+### 0x09 Math
+Derivative: $y = V_{ref} + s \cdot \Delta x$ with $s = \text{mant} \cdot 2^{\text{exp}}$. Leaky integrator: every sample, the state is multiplied by the leak factor (mant) and the input relative to Vref, scaled by $2^{\text{exp}}$ (exp ≤ 1; negative values attenuate), is added. The output is Vref plus the state.
 
-* **Function:** Triggers output HIGH when the signal escapes the defined upper/lower boundaries.
-* **Implementation:** Pure conditional branching logic outputting absolute 12-bit limits.
-* **Payload Parameters:**
-* 0x11-0x12 (U16): `upper` - Raw ADC threshold code (Upper bound).
-* 0x13-0x14 (U16): `lower` - Raw ADC threshold code (Lower bound).
+### 0x0A Slew rate limiter
+Limits the change of the output per sample.
 
+### 0x0B Sample & hold
+Tracks the input for the first *track* samples of every *period* samples and holds the last value for the rest. track = 1 gives a sample & hold; larger values give a track & hold.
 
-
-#### 0x06: Schmitt Trigger (`MIMIC_MODE_ID_COMPARATOR_SCHMITT`)
-
-* **Function:** A comparator with hysteresis memory, preventing noisy transitions.
-* **Implementation:** Conditional branching retaining state memory (`wave_last_raw`).
-* **Payload Parameters:**
-* 0x11-0x12 (U16): `upper` - Trigger HIGH threshold.
-* 0x13-0x14 (U16): `lower` - Trigger LOW threshold.
-
-
-
-#### 0x07: Envelope Follower (`MIMIC_MODE_ID_ENVELOPE_FOLLOWER`)
-
-* **Function:** Tracks amplitude peaks (or troughs) with a customizable decay release time. Acts as a Peak Hold if decay is zero.
-* **Implementation:** Multiplies the historical state by a Q15 decay factor when the input falls below the tracked envelope.
-* **Payload Parameters:**
-* 0x11-0x12 (S16): `decay_q15` - Q15 decay factor (derived from $\tau$ us).
-* 0x13 (U8): `polarity` - Positive peak (0) or Negative trough (1) tracking.
-
-
-
-#### 0x08: Signal Clipper (`MIMIC_MODE_ID_CLIPPER`)
-
-* **Function:** Clamps the output signal strictly within absolute physical voltage boundaries.
-* **Implementation:** Standard boundary threshold branching limits.
-* **Payload Parameters:**
-* 0x11-0x12 (S16): `upper` - Upper clamp limit (Raw).
-* 0x13-0x14 (S16): `lower` - Lower clamp limit (Raw).
-
-
-
-#### 0x09: Non-linear LUT Waveshaper (`MIMIC_MODE_ID_NONLINEAR_LUT`)
-
-* **Function:** Emulates analog logarithmic and anti-logarithmic amplification curves.
-* **Implementation:** Instead of heavy runtime Taylor series execution, maps a pre-computed 65-point Look-Up Table (LUT) across the ADC range, utilizing single-cycle linear interpolation for sub-index accuracy.
-* **Payload Parameters:**
-* 0x11 (U8): `lut_type` - 0 for Logarithmic, 1 for Anti-Logarithmic.
-
-
-
-#### 0x0A: Signal Derivative (`MIMIC_MODE_ID_MATH_DERIVATIVE`)
-
-* **Function:** Mathematical differentiator (extracts the rate of change).
-* **Implementation:** Calculates $\Delta$ between the current and previous sample, scaled by a fractional Q15 multiplier and bit-shift.
-* **Payload Parameters:**
-* 0x11-0x12 (S16): `scale_fract_q15` - Base scaling multiplier.
-* 0x13 (S8): `scale_shift` - Coarse gain shift multiplier.
-
-
-
-#### 0x0B: Leaky Integral (`MIMIC_MODE_ID_MATH_INTEGRAL`)
-
-* **Function:** Accumulates the input signal over time.
-* **Implementation:** Standard accumulator that slightly attenuates (leaks) the historical state using a fractional multiplier to prevent unbounded signal saturation.
-* **Payload Parameters:**
-* 0x11-0x12 (S16): `scale_fract_q15` - Leaky attenuation factor for historical state.
-* 0x13 (S8): `scale_shift` - Dynamic gain scale for new incoming samples.
-
-
-
-#### 0x0C: Full-Wave Rectifier (`MIMIC_MODE_ID_RECTIFIER_FULL`)
-
-* **Function:** Absolute value mathematical operation (folds negative half-cycles up).
-* **Implementation:** Branches around a defined center reference voltage (`vref_raw`).
-* **Payload Parameters:**
-* 0x11-0x12 (S16): `vref_raw` - Symmetrical center voltage reference code.
-
-
-
-#### 0x0D: Slew Rate Limiter (`MIMIC_MODE_ID_SLEW_RATE_LIMITER`)
-
-* **Function:** Limits how fast the voltage can physically change per sample ($\Delta V / \Delta t$).
-* **Implementation:** Calculates the delta and clamps it mathematically without heavy pipeline-flushing jumps (branchless clamp logic).
-* **Payload Parameters:**
-* 0x11-0x12 (S16): `scale_fract_q15` - Maximum allowed delta per 300 kHz sample.
-
-
-
-#### 0x0E: Sample & Hold (`MIMIC_MODE_ID_SAMPLE_AND_HOLD`)
-
-* **Function:** Freezes the analog signal at a specified interval (downsampling).
-* **Implementation:** Utilizes an internal sample counter to hold `last_q15` constant until the tracking threshold is breached.
-* **Payload Parameters:**
-* 0x11-0x12 (U16): `period_samples` - Total duration of the T&H cycle.
-* 0x13-0x14 (U16): `track_samples` - Duration spent tracking before holding.
-
-
-
-#### 0x0F: Digital Delay (`MIMIC_MODE_ID_DELAY`)
-
-* **Function:** Pure time-delay buffer without filtering.
-* **Implementation:** Allocates a contiguous ring buffer (`delay_buffer[4096]`) masking the write pointer mathematically for safe wraparound.
-* **Payload Parameters:**
-* 0x11-0x12 (U16): `delay_samples` - Number of samples to hold in memory.
+### 0x0C Delay
+Delays the input by the given number of samples (ring buffer of 4096 samples).
