@@ -69,9 +69,19 @@ graph LR
     style PY32F071 fill:#e6f2ff,stroke:#0066cc,stroke-width:2px,stroke-dasharray:5 5
 ```
 
+### I²C Address
+Two solder jumpers on the bottom side select the address (read at power-up).
+
+| A1 | A0 | Address |
+|---|---|---|
+| open | open | 0x40 |
+| open | closed | 0x41 |
+| closed | open | 0x42 |
+| closed | closed | 0x43 |
+
 ## Software Ecosystem
 To lower the barrier to entry for real-time digital signal processing, we provide a dedicated **C++ library for Arduino**. 
-* **Zero-Hassle Control:** Complex Q15 fixed-point arithmetic and low-level I²C register maps are completely abstracted away.
+* **Zero-Hassle Control:** Fixed-point arithmetic and low-level I²C register maps are completely abstracted away.
 * **Intuitive High-Level API:** Users can dynamically switch emulation modes and fine-tune physical parameters—such as cutoff frequencies, amplifier gains, or envelope release times—by simply passing variables into straightforward function calls.
 
 *For details on the inner workings and the register map, see [firmware_reference.md](docs/firmware_reference.md). The Arduino library is [AnalogMimic](https://github.com/tkgktyk/analog-mimic-arduino).*
@@ -131,8 +141,9 @@ selected circuit as usual and will not reproduce Fig. 4 and Fig. 5.
 
 `firmware/lib/PY32F071_Firmware` is
 [OpenPuya/PY32F071_Firmware](https://github.com/OpenPuya/PY32F071_Firmware)
-v1.0.5 (`73e384cd`), distributed under BSD-3-Clause. Its contents are
-included in this repository; see `firmware/lib/PY32F071_Firmware/LICENSE`.
+v1.0.5 (`73e384cd`), distributed under BSD-3-Clause. It is included as a
+git submodule; clone with git clone --recursive
+(or run git submodule update --init).
 
 ### Host side
 
