@@ -80,4 +80,4 @@ NOT covered by this repository's licenses. See LICENSE.md for scope.
 ### KiCAD
 
 - Source: https://www.kicad.org/download/
-- Version: 9.0.7
+- Version: 10.0.3
