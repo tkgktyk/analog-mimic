@@ -1,7 +1,7 @@
 # External assets for Analog Mimic
 
 Assets required to build, flash, or understand this project that are
-NOT covered by this repository's licenses. See LICENSE.md for scope.
+NOT covered by this repository's licenses. See LICENSE for scope.
 
 ## Documents (not redistributed)
 
