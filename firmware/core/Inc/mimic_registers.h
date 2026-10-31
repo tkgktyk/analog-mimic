@@ -94,7 +94,7 @@
 #define MIMIC_REG_SYSTEM_UID              MIMIC_REG_SYSTEM_UID_3
 // --- Dynamic telemetry ---
 #define MIMIC_REG_SYSTEM_STATUS           0x0A
-#define MIMIC_REG_SYSTEM_ADC_VAL_H        0x0B
+#define MIMIC_REG_SYSTEM_ADC_VAL_H        0x0B // DSP input, raw_fx3 (averaged over 2^N when decimated)
 #define MIMIC_REG_SYSTEM_ADC_VAL_L        0x0C
 #define MIMIC_REG_SYSTEM_ADC_VAL          MIMIC_REG_SYSTEM_ADC_VAL_H
 #define MIMIC_REG_SYSTEM_CPU_CYCLES_H     0x0D
@@ -197,7 +197,9 @@
 //   raw          ADC / DAC code. 0 = 0 V, 4096 = VDD (integer, 0 - 4095).
 //                1 LSB = VDD / 4096.
 //   raw_fx3      raw with 3 fractional bits, signed 16-bit (1 LSB = 8).
-//                -4096 to +4095.875 LSB. Used for every voltage at the interface.
+//                -4096 to +4095.875 LSB. Used for every voltage at the interface
+//                and for every signal inside the DSP; only the ADC read and the
+//                DAC write use integer raw codes.
 //   q0_15        Signed coefficient, 15 fractional bits (-1.0 to < 1.0).
 //   uq1_15       Unsigned gain, 15 fractional bits (0 to < 2.0, 1.0 = 32768).
 //   mant / exp   value = mant (q0_15) * 2^exp (exp: int8 shift).
@@ -213,6 +215,9 @@
 //   delay) do not use Vref.
 //
 // Register formats
+//   0x0B-0x0C  SYSTEM_ADC_VAL   uint16  raw_fx3  DSP input: the latest ADC sample, or the
+//                                                rounded average of 2^N samples when
+//                                                decimated (latched on the 0x0B read)
 //   0x12-0x13  GLOBAL_OFFSET    int16   raw_fx3  User output offset
 //   0x14-0x15  GLOBAL_VREF      int16   raw_fx3  Common reference voltage
 //   0x30-0x31  NVM_GAIN         uint16  uq1_15   Output gain calibration

@@ -82,7 +82,7 @@ static uint8_t PerformReadReg(uint8_t addr) {
         case MIMIC_REG_SYSTEM_STATUS:
             return MimicDevice_GetAndClearStatusFlag();
 
-        // --- 16-bit Bound Live ADC Sample Read Out ---
+        // --- 16-bit DSP input (raw_fx3; 2^N average when decimated) ---
         case MIMIC_REG_SYSTEM_ADC_VAL_H:
             latched_adc_val = MimicDevice_GetAdcVal(); // Latch atomic context upon high-byte access
             return (uint8_t)(latched_adc_val >> 8);

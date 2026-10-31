@@ -47,7 +47,7 @@ typedef struct {
 
     // --- 2. Live Telemetry (Written by Sampling ISR / I2C ISR, Read by I2C ISR / Main) ---
     volatile uint8_t  status;                 /**< System status flags & transient error bits */
-    volatile uint16_t adc_val;                /**< Latest raw data acquired from ADC */
+    volatile uint16_t adc_val;                /**< DSP input, raw_fx3 (2^N average when decimated) */
     volatile uint16_t cpu_cycles_max;         /**< Peak-hold execution cycle counter for profiling */
 
     // --- 3. Main Loop Task Triggers (Latched by I2C ISR on STOP, Consumed by Main Loop) ---
@@ -148,9 +148,9 @@ static inline __attribute__((always_inline)) uint16_t MimicDevice_PopCpuCyclesMa
 // Fast Inline Accessors for High-Frequency Sampling ISR
 // =========================================================
 
-static inline __attribute__((always_inline)) void MimicDevice_SetAdcVal_ISR(uint16_t raw_val) {
+static inline __attribute__((always_inline)) void MimicDevice_SetAdcVal_ISR(uint16_t x_raw_fx3) {
     extern MimicDevice_t mimic_device;
-    mimic_device.adc_val = raw_val;
+    mimic_device.adc_val = x_raw_fx3;
 }
 
 static inline __attribute__((always_inline)) void MimicDevice_SetErrorFlag_ISR(uint8_t error_flag) {
