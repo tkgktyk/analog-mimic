@@ -84,7 +84,7 @@ The DSP core uses no floating point. All states and arithmetic are 32-bit intege
 
 All multi-byte values are big-endian.
 
-Voltages are ratiometric: the ADC and the DAC both use VDD as the reference. The library converts millivolts to `raw_fx3` as `mV × 4096 × 8 / VDD_mV` (rounded), using the supply voltage given to the constructor.
+Voltages are ratiometric: the ADC and the DAC both use VDD as the reference. The library converts volts to `raw_fx3` as `V × 4096 × 8 / VDD` (rounded), using the supply voltage given to the constructor.
 
 ### Common reference (Vref)
 
