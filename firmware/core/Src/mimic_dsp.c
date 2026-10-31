@@ -65,7 +65,7 @@ static volatile uint32_t mimic_output_slot = MIMIC_ADC_MID_VALUE;
 #define INTEG_FRAC_BITS     14                                  // integral state: raw_vref_fx3 << 14
 #define INTEG_STATE_LIM     (((1 << 16) - 1) << INTEG_FRAC_BITS) // |y| < 2^16 raw_fx3 (= +/-8192 LSB)
 #define ENV_FRAC_BITS       15                                  // envelope state: raw_vref_fx3 << 15
-#define LEAK_ONE_Q0_15      32767   // leak / decay factor that means 1.0 (no leak: integrator, peak hold)
+#define COEF12_SHIFT_MAX    40      // mant12 / sh coefficients: c >= 2^-29 (tau up to hours)
 
 // =========================================================
 // DSP Specific Constants
@@ -150,10 +150,21 @@ static uint16_t delay_buffer_raw_fx3[DELAY_BUFFER_SIZE] = {0};   // 0 - 32760 fi
 // Every mode takes and returns raw_fx3. Modes with a signal center work around the
 // common Vref (raw_vref_fx3); the others work on raw_fx3 directly.
 
+// Positive coefficient c applied to a state with F fractional bits below raw_fx3:
+// c * v * 2^F = ((v * mant) << ls + half) >> rs (one of ls / rs is 0, see SetCoef12)
+typedef struct {
+    int32_t mant;            // 0 or 2048 - 4095 (0: c = 0)
+    int32_t ls;
+    int32_t rs;
+    int32_t half;
+} Coef12_t;
+
 typedef struct {
     uint8_t type;            // Config: MIMIC_FILTER_1ST_*
-    int32_t alpha_q0_15;     // Config
-    int32_t accum;           // State (raw_vref_fx3 << Q15_FRAC_BITS)
+    int32_t g_mant;          // Config: G = g / (1 + g), G * 2^12 = g_mant >> g_shift
+    int32_t g_shift;         // Config
+    int32_t g_half;          // Config: rounding for g_shift
+    int32_t s;               // State: TPT integrator, raw_vref_fx3 << SVF_STATE_TO_FX3
 } Filter1st_t;
 
 typedef struct {
@@ -187,7 +198,7 @@ typedef struct {
     int32_t scale_mant_q0_15; // Config: scale = mant * 2^exp
     int32_t shift;            // Config: derivative 15 - exp (0 - 15), integral input shift
     int32_t half;             // Config: derivative, rounding for shift
-    int32_t leak_c_q0_15;     // Config: integral, 1 - leak (0 = no leak)
+    Coef12_t leak_c;          // Config: integral, 1 - leak (0 = no leak)
     int32_t last_raw_vref_fx3;// State: derivative, previous input
     int32_t state;            // State: integral, raw_vref_fx3 << INTEG_FRAC_BITS
 } Math_t;
@@ -198,12 +209,17 @@ typedef struct {
 } Slew_t;
 
 typedef struct {
+    uint8_t type;            // Config: MIMIC_CLIPPER_*
     int32_t upper_raw_fx3;   // Config: upper limit (comparison and output level)
     int32_t lower_raw_fx3;   // Config: lower limit (comparison and output level)
+    int32_t center_raw_fx3;  // Config: soft, (upper + lower) / 2
+    int32_t lim_raw_fx3;     // Config: soft, 1.5 x (upper - center): the curve reaches the limit
+    int32_t d2_shift;        // Config: soft, d^2 >> d2_shift < 2^16
+    int32_t m;               // Config: soft, 4 / (27 h^2) scaled: r = ((d^2 >> shift) * m) >> 15
 } Clipper_t;
 
 typedef struct {
-    int32_t decay_c_q0_15;    // Config: 1 - decay (0 = peak hold)
+    Coef12_t decay_c;         // Config: 1 - decay (0 = peak hold)
     uint8_t polarity;         // Config
     int32_t state;            // State: magnitude, raw_vref_fx3 << ENV_FRAC_BITS
 } Envelope_t;
@@ -296,18 +312,30 @@ static inline __attribute__((always_inline)) uint32_t MuxDacGpio(uint32_t result
 // 2. DSP Core Functions (raw_fx3 in, raw_fx3 out; out-of-range values saturate in the output stage)
 // =========================================================
 
-// 1st-order filter: LPF y = Vref + LPF(d), HPF y = Vref + (d - LPF(d)), d = x - Vref.
+// 1st-order filter (TPT one-pole, bilinear): y = Vref + H(x - Vref)
+//   v = G (x - s),  lp = v + s,  s = lp + v,   G = g / (1 + g), g = tan(pi fc / fs)
+//   LPF = lp, HPF = x - lp, APF = lp - hp = 2 lp - x
 // Like an RC filter returning to Vref: a step of Vref settles with the time constant.
+// |x - s| <= 2^16 and g_mant < 2^12: the product stays within 2^28.
 static inline __attribute__((always_inline)) int32_t ProcessFilter1st(int32_t x_raw_fx3) {
     Filter1st_t *p = &dsp_ctx.filter1st;
 
-    int32_t in_raw_vref_fx3 = ToVrefFx3(x_raw_fx3);
-    int32_t state_raw_vref_fx3 = p->accum >> Q15_FRAC_BITS;
-    p->accum += (in_raw_vref_fx3 - state_raw_vref_fx3) * p->alpha_q0_15;
+    int32_t x  = ToVrefFx3(x_raw_fx3);
+    int32_t s  = p->s;
+    int32_t d  = x - ((s + (1 << (SVF_STATE_TO_FX3 - 1))) >> SVF_STATE_TO_FX3);
+    int32_t v  = (p->g_mant * d + p->g_half) >> p->g_shift;
+    int32_t lp = v + s;
+    p->s = lp + v;
 
-    int32_t out_raw_vref_fx3 = p->accum >> Q15_FRAC_BITS;
-    if (p->type == MIMIC_FILTER_1ST_HPF) out_raw_vref_fx3 = in_raw_vref_fx3 - out_raw_vref_fx3;
-    return FromVrefFx3(out_raw_vref_fx3);
+    int32_t y;
+    if (p->type == MIMIC_FILTER_1ST_LPF) {
+        y = (lp + (1 << (SVF_STATE_TO_FX3 - 1))) >> SVF_STATE_TO_FX3;
+    } else if (p->type == MIMIC_FILTER_1ST_HPF) {
+        y = x - ((lp + (1 << (SVF_STATE_TO_FX3 - 1))) >> SVF_STATE_TO_FX3);
+    } else {
+        y = ((lp + (1 << (SVF_STATE_TO_FX3 - 2))) >> (SVF_STATE_TO_FX3 - 1)) - x;   // 2 lp - x
+    }
+    return FromVrefFx3(y);
 }
 
 // Biquad mode (TPT state-variable filter): y = Vref + H(x - Vref)
@@ -339,6 +367,7 @@ static inline __attribute__((always_inline)) int32_t ProcessBiquadFilter(int32_t
         case MIMIC_FILTER_BIQUAD_HPF: y = hp; break;
         case MIMIC_FILTER_BIQUAD_BPF: y = (p->k * bp_fx3 + (1 << (SVF_K_FRAC_BITS - 1))) >> SVF_K_FRAC_BITS; break;
         case MIMIC_FILTER_BIQUAD_NOTCH: y = x - ((p->k * bp_fx3 + (1 << (SVF_K_FRAC_BITS - 1))) >> SVF_K_FRAC_BITS); break;
+        case MIMIC_FILTER_BIQUAD_APF:   y = x - ((p->k * bp_fx3 + (1 << (SVF_K_FRAC_BITS - 2))) >> (SVF_K_FRAC_BITS - 1)); break;
         default: y = x; break;   // UNITY: same work, input passed through (profiling)
     }
     return FromVrefFx3(y);   // high-Q overshoot is bounded by the output-stage guard
@@ -374,24 +403,34 @@ static inline __attribute__((always_inline)) int32_t ProcessEnvelopeFollower(int
     if (p->polarity == MIMIC_POLARITY_NEGATIVE) mag = -mag;
     if (mag < 0) mag = 0;                         // 0 - 32767: mag << 15 < 2^30
 
-    // state *= decay, as state -= (1 - decay) * state. The integer part (<= 2^15) times
-    // decay_c (<= 2^15) stays within int32; the state decays all the way below 1/8 LSB.
     int32_t e = p->state >> ENV_FRAC_BITS;
     if (mag > e) {
         p->state = mag << ENV_FRAC_BITS;
     } else {
-        p->state -= e * p->decay_c_q0_15;
+        // state *= decay as state -= (1 - decay) * state: e < 2^15, mant < 2^12, ls <= 3
+        p->state -= (((e * p->decay_c.mant) << p->decay_c.ls) + p->decay_c.half) >> p->decay_c.rs;
     }
     // magnitude above Vref (same for both polarities)
     return FromVrefFx3((p->state + (1 << (ENV_FRAC_BITS - 1))) >> ENV_FRAC_BITS);
 }
 
+// Clipper. Hard: passes x between the limits. Soft (cubic, d = x - center, h = upper - center):
+//   y = center + d - 4 d^3 / (27 h^2) for |d| < 1.5 h (gain 1 at the center, slope 0 at the
+//   limits), the limit beyond. |d| < 1.5 h <= 24576: d^2 < 2^30, products < 2^31.
 static inline __attribute__((always_inline)) int32_t ProcessClipper(int32_t x_raw_fx3) {
     Clipper_t *p = &dsp_ctx.clipper;
 
-    if (x_raw_fx3 > p->upper_raw_fx3) return p->upper_raw_fx3;
-    if (x_raw_fx3 < p->lower_raw_fx3) return p->lower_raw_fx3;
-    return x_raw_fx3;
+    if (p->type == MIMIC_CLIPPER_HARD) {
+        if (x_raw_fx3 > p->upper_raw_fx3) return p->upper_raw_fx3;
+        if (x_raw_fx3 < p->lower_raw_fx3) return p->lower_raw_fx3;
+        return x_raw_fx3;
+    }
+
+    int32_t d = x_raw_fx3 - p->center_raw_fx3;
+    if (d >=  p->lim_raw_fx3) return p->upper_raw_fx3;
+    if (d <= -p->lim_raw_fx3) return p->lower_raw_fx3;
+    int32_t r = (((d * d) >> p->d2_shift) * p->m) >> Q15_FRAC_BITS;   // 4 d^2 / (27 h^2), q15
+    return p->center_raw_fx3 + d - ((d * r) >> Q15_FRAC_BITS);
 }
 
 // LOG:     y = Vref + slope * log10(x / unit)      (x: magnitude from 0 V)
@@ -455,11 +494,11 @@ static inline __attribute__((always_inline)) int32_t ProcessMath(int32_t x_raw_f
 
     // Leaky integrator: y = leak * y + 2^exp * d, as y += 2^exp * d - (1 - leak) * y.
     // The state keeps INTEG_FRAC_BITS below raw_fx3: |state| < 2^30, |d << s| < 2^30,
-    // |y * leak_c| < 2^31.
+    // |y| < 2^16 and mant < 2^12 with ls <= 2: the leak term < 2^30.
     int32_t in_term = (s >= 0) ? (in_raw_vref_fx3 << s) : (in_raw_vref_fx3 >> -s);
     int32_t y = (p->state + (1 << (INTEG_FRAC_BITS - 1))) >> INTEG_FRAC_BITS;
     int32_t state = p->state + in_term
-                  - ((y * p->leak_c_q0_15) >> (Q15_FRAC_BITS - INTEG_FRAC_BITS));
+                  - ((((y * p->leak_c.mant) << p->leak_c.ls) + p->leak_c.half) >> p->leak_c.rs);
     state = ClampI32(state, INTEG_STATE_LIM);
     p->state = state;
     return FromVrefFx3((state + (1 << (INTEG_FRAC_BITS - 1))) >> INTEG_FRAC_BITS);
@@ -602,12 +641,45 @@ static void ConfigureLog(const uint8_t *p) {
     }
 }
 
-// 1 - factor for a leak / decay factor in q0_15. 32767 (1.0 from the library) means no
-// leak: a pure integrator, or a peak hold.
-static int32_t LeakToComplement(int32_t factor_q0_15) {
-    if (factor_q0_15 >= LEAK_ONE_Q0_15) return 0;
-    if (factor_q0_15 < 0) factor_q0_15 = 0;
-    return (1 << Q15_FRAC_BITS) - factor_q0_15;
+// Coefficient c = mant / 2^sh (mant12 / sh), applied to a state with frac_bits below raw_fx3
+static void SetCoef12(Coef12_t *c, uint16_t mant, uint8_t sh, int32_t frac_bits) {
+    if (mant > 4095) mant = 4095;
+    if (sh < 12) sh = 12;                      // c < 1
+    if (sh > COEF12_SHIFT_MAX) sh = COEF12_SHIFT_MAX;
+    c->mant = mant;
+    c->ls   = (frac_bits > sh) ? frac_bits - sh : 0;
+    c->rs   = (sh > frac_bits) ? sh - frac_bits : 0;
+    c->half = (1 << c->rs) >> 1;
+}
+
+// Soft clipper: center, reach (1.5 h) and the d^2 scaling for 4 / (27 h^2)
+static void ConfigureClipper(const uint8_t *p) {
+    Clipper_t *c = &dsp_ctx.clipper;
+    int32_t upper = ParseS16(p + 1);
+    int32_t lower = ParseS16(p + 3);
+    c->type          = p[0];
+    c->upper_raw_fx3 = upper;
+    c->lower_raw_fx3 = lower;
+    if (c->type != MIMIC_CLIPPER_SOFT) return;
+
+    // Limits within 0 V - VDD: h <= 16383, so |d| < 1.5 h keeps d^2 < 2^30
+    if (upper > MIMIC_RAW_FX3_MAX) upper = MIMIC_RAW_FX3_MAX;
+    if (lower < 0) lower = 0;
+    if (upper < lower) upper = lower;
+    c->upper_raw_fx3  = upper;
+    c->lower_raw_fx3  = lower;
+    c->center_raw_fx3 = (upper + lower) >> 1;
+    int32_t h = upper - c->center_raw_fx3;
+    c->lim_raw_fx3 = h + (h >> 1);
+    if (h == 0) { c->d2_shift = 0; c->m = 0; return; }
+
+    // hh = h^2 >> shift in [2^14, 2^15) (or h^2 when smaller): m = 4 * 2^30 / (27 hh)
+    uint32_t h2 = (uint32_t)(h * h);
+    int32_t shift = 0;
+    while ((h2 >> shift) >= (1u << 15)) shift++;
+    uint32_t hh = h2 >> shift;
+    c->d2_shift = shift;
+    c->m = (int32_t)((((uint64_t)4 << 30) + 27u * hh / 2) / (27u * hh));
 }
 
 // mant * 2^exp as (v * mant + half) >> shift, exp limited to 0 - 15 (gain < 2^15)
@@ -675,10 +747,16 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
             break;
         }
 
-        case MIMIC_MODE_ID_FILTER_1ST:
-            dsp_ctx.filter1st.type        = *(p + 0);
-            dsp_ctx.filter1st.alpha_q0_15 = ParseS16(p + 1);
+        case MIMIC_MODE_ID_FILTER_1ST: {
+            // State is kept: changing fc / type while running is smooth
+            uint32_t g_shift = p[3];
+            if (g_shift > SVF_SHIFT_MAX) g_shift = SVF_SHIFT_MAX;
+            dsp_ctx.filter1st.type    = p[0];
+            dsp_ctx.filter1st.g_mant  = ParseU16(p + 1) & 0x0FFF;
+            dsp_ctx.filter1st.g_shift = (int32_t)g_shift;
+            dsp_ctx.filter1st.g_half  = (1 << g_shift) >> 1;
             break;
+        }
 
         case MIMIC_MODE_ID_PGA: {
             dsp_ctx.pga.gain_mant_q0_15 = ParseS16(p + 0);
@@ -702,7 +780,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
                 if (exp < -(INTEG_FRAC_BITS + 16)) exp = -(INTEG_FRAC_BITS + 16);
                 dsp_ctx.math.shift        = INTEG_FRAC_BITS + exp;
                 dsp_ctx.math.half         = 0;
-                dsp_ctx.math.leak_c_q0_15 = LeakToComplement(dsp_ctx.math.scale_mant_q0_15);
+                SetCoef12(&dsp_ctx.math.leak_c, ParseU16(p + 1), p[4], INTEG_FRAC_BITS);
             } else {
                 MantExpToShift(exp, &dsp_ctx.math.shift, &dsp_ctx.math.half);
             }
@@ -717,8 +795,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
         }
 
         case MIMIC_MODE_ID_CLIPPER:
-            dsp_ctx.clipper.upper_raw_fx3 = ParseS16(p + 0);
-            dsp_ctx.clipper.lower_raw_fx3 = ParseS16(p + 2);
+            ConfigureClipper(p);
             break;
 
         case MIMIC_MODE_ID_LOG:
@@ -726,7 +803,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
             break;
 
         case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:
-            dsp_ctx.envelope.decay_c_q0_15 = LeakToComplement(ParseS16(p + 0));
+            SetCoef12(&dsp_ctx.envelope.decay_c, ParseU16(p + 0), p[3], ENV_FRAC_BITS);
             dsp_ctx.envelope.polarity    = (uint8_t)*(p + 2);
             break;
 

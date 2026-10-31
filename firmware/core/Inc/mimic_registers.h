@@ -35,6 +35,11 @@
 // --- Sub-types (payload [0] of the grouped modes) ---
 #define MIMIC_FILTER_1ST_LPF              0
 #define MIMIC_FILTER_1ST_HPF              1
+#define MIMIC_FILTER_1ST_APF              2 // All-pass (phase shifter), LPF - HPF
+
+#define MIMIC_CLIPPER_HARD                0 // Passes the input between the limits, clips outside
+#define MIMIC_CLIPPER_SOFT                1 // Cubic soft clip: gain 1 at the center, reaches a limit
+                                            // at 1.5 x the center-to-limit distance
 
 #define MIMIC_COMPARATOR_WINDOW           0
 #define MIMIC_COMPARATOR_SCHMITT          1
@@ -44,6 +49,7 @@
 #define MIMIC_FILTER_BIQUAD_BPF           2 // 0 dB peak gain
 #define MIMIC_FILTER_BIQUAD_NOTCH         3
 #define MIMIC_FILTER_BIQUAD_UNITY         4 // Passes the input, same CPU load (profiling)
+#define MIMIC_FILTER_BIQUAD_APF           5 // All-pass (phase shifter), x - 2 k bp
 
 #define MIMIC_MATH_DERIVATIVE             0
 #define MIMIC_MATH_INTEGRAL               1
@@ -175,10 +181,10 @@
 
 #define MIMIC_MODE_ID_BYPASS_DSP          0x00 // DSP bypass (offset / inversion only)
 #define MIMIC_MODE_ID_PGA                 0x01 // Programmable gain amplifier around Vref
-#define MIMIC_MODE_ID_FILTER_1ST          0x02 // 1st-order filter (LPF / HPF)
+#define MIMIC_MODE_ID_FILTER_1ST          0x02 // 1st-order filter (LPF / HPF / all-pass)
 #define MIMIC_MODE_ID_FILTER_BIQUAD       0x03 // 2nd-order filter (state-variable, coefficients from the host)
 #define MIMIC_MODE_ID_COMPARATOR          0x04 // Comparator (window / Schmitt), GPIO output
-#define MIMIC_MODE_ID_CLIPPER             0x05 // Clipper (upper / lower limits)
+#define MIMIC_MODE_ID_CLIPPER             0x05 // Clipper (upper / lower limits, hard / soft)
 #define MIMIC_MODE_ID_RECTIFIER           0x06 // Rectifier folding at Vref (full / half)
 #define MIMIC_MODE_ID_ENVELOPE_FOLLOWER   0x07 // Envelope follower / peak hold
 #define MIMIC_MODE_ID_LOG                 0x08 // Logarithmic / antilogarithmic amplifier
@@ -204,6 +210,8 @@
 //   q0_15        Signed coefficient, 15 fractional bits (-1.0 to < 1.0).
 //   uq1_15       Unsigned gain, 15 fractional bits (0 to < 2.0, 1.0 = 32768).
 //   mant / exp   value = mant (q0_15) * 2^exp (exp: int8 shift).
+//   mant12 / sh  Positive coefficient c < 1 as a 12-bit mantissa (2048 - 4095) and a shift:
+//                c = mant / 2^sh (sh >= 12). mant = 0 means c = 0.
 //
 // Common reference (Vref)
 //   An input of the module (default VDD / 2, limited to 0 V - VDD). Modes with a
@@ -233,7 +241,10 @@
 //
 //   Mode payload (from MIMIC_REG_MODE_PAYLOAD_START). Grouped modes have the type at [0].
 //   PGA                [0-1] gain mant q0_15, [2] gain exp int8 (>= 0)
-//   FILTER_1ST         [0] type (MIMIC_FILTER_1ST_*), [1-2] alpha q0_15
+//   FILTER_1ST         TPT one-pole filter (bilinear; g = tan(pi fc / fs), G = g / (1 + g))
+//                      [0] type (MIMIC_FILTER_1ST_*),
+//                      [1-2] G mant uint16, [3] G shift: G * 2^12 = mant >> shift
+//                      Limits (library): fs / 100000 <= fc <= 0.24 fs
 //   FILTER_BIQUAD      TPT state-variable filter (bilinear; g = tan(pi fc / fs), k = 1 / Q)
 //                      [0] type (MIMIC_FILTER_BIQUAD_*),
 //                      [1-2] g mant uint16, [3] g shift: g * 2^12 = mant >> shift
@@ -244,14 +255,16 @@
 //                      [9-10] k uint16 (11 fractional bits)
 //                      Limits (library): fs / 100000 <= fc < fs / 4, 0.1 <= Q <= 10
 //   COMPARATOR         [0] type (MIMIC_COMPARATOR_*), [1-2] upper raw_fx3, [3-4] lower raw_fx3
-//   CLIPPER            [0-1] upper raw_fx3, [2-3] lower raw_fx3
+//   CLIPPER            [0] type (MIMIC_CLIPPER_*), [1-2] upper raw_fx3, [3-4] lower raw_fx3
 //   RECTIFIER          [0] type (MIMIC_RECT_*), [1] polarity (MIMIC_POLARITY_*)
-//   ENVELOPE_FOLLOWER  [0-1] decay q0_15 (32767 = 1.0: peak hold), [2] polarity
+//   ENVELOPE_FOLLOWER  [0-1] 1 - decay mant12, [2] polarity, [3] 1 - decay sh
+//                      (decay per sample; 1 - decay = 0: peak hold)
 //   LOG                [0] type (MIMIC_LOG_TYPE_*), [1-2] slope raw_fx3 per decade
 //                      (signed, negative = inverting), [3-4] unit raw_fx3 (> 0)
-//   MATH               [0] type (MIMIC_MATH_*), [1-2] mant q0_15, [3] exp int8
-//                      (derivative: scale = mant * 2^exp, integral: leak = mant
-//                       (32767 = 1.0: no leak), input shift = exp <= 1)
+//   MATH               [0] type (MIMIC_MATH_*)
+//                      derivative: [1-2] scale mant q0_15, [3] scale exp int8 (0 - 15)
+//                      integral:   [1-2] 1 - leak mant12, [3] input shift int8 (<= 1),
+//                                  [4] 1 - leak sh (leak per sample; 1 - leak = 0: no leak)
 //   SLEW_RATE_LIMITER  [0-1] max change per sample raw_fx3 (>= 0)
 //   SAMPLE_AND_HOLD    [0-1] period, [2-3] track (samples, uint16)
 //   DELAY              [0-1] delay (samples, uint16)

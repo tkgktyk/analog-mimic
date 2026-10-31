@@ -80,6 +80,7 @@ The DSP core uses no floating point. All states and arithmetic are 32-bit intege
 | `q0_15` | Signed coefficient, 15 fractional bits (-1.0 to < 1.0). |
 | `uq1_15` | Unsigned gain, 15 fractional bits (0 to < 2.0, 1.0 = 32768). |
 | `mant` / `exp` | value = mant (`q0_15`) × 2^exp (exp: int8 shift). |
+| `mant12` / shift | positive coefficient $c < 1$ = mant / 2^shift with a 12-bit mantissa (2048 - 4095) and shift ≥ 12; mant = 0 means $c = 0$. |
 
 All multi-byte values are big-endian.
 
@@ -151,14 +152,14 @@ Payload offsets are relative to `MODE_PAYLOAD` (0x21). Modes that group several 
 | --- | --- | --- |
 | 0x00 | `BYPASS_DSP` | none |
 | 0x01 | `PGA` | [0-1] gain mant `q0_15`, [2] gain exp int8 (≥ 0) |
-| 0x02 | `FILTER_1ST` | [0] type (0: LPF, 1: HPF), [1-2] alpha `q0_15` |
+| 0x02 | `FILTER_1ST` | [0] type (0: LPF, 1: HPF, 2: all-pass), [1-2] G mant, [3] G shift (see below) |
 | 0x03 | `FILTER_BIQUAD` | [0] type, [1-10] coefficients (see below) |
 | 0x04 | `COMPARATOR` | [0] type (0: window, 1: Schmitt), [1-2] upper `raw_fx3`, [3-4] lower `raw_fx3` |
-| 0x05 | `CLIPPER` | [0-1] upper `raw_fx3`, [2-3] lower `raw_fx3` |
+| 0x05 | `CLIPPER` | [0] type (0: hard, 1: soft), [1-2] upper `raw_fx3`, [3-4] lower `raw_fx3` |
 | 0x06 | `RECTIFIER` | [0] type (0: full, 1: half), [1] polarity (0: positive, 1: negative) |
-| 0x07 | `ENVELOPE_FOLLOWER` | [0-1] decay `q0_15`, [2] polarity |
+| 0x07 | `ENVELOPE_FOLLOWER` | [0-1] 1 − decay mant12, [2] polarity, [3] 1 − decay shift (0: peak hold) |
 | 0x08 | `LOG` | [0] type (0: log, 1: antilog), [1-2] slope `raw_fx3` per decade (signed), [3-4] unit `raw_fx3` (> 0) |
-| 0x09 | `MATH` | [0] type (0: derivative, 1: integral), [1-2] mant `q0_15`, [3] exp int8 |
+| 0x09 | `MATH` | [0] type (0: derivative, 1: integral). Derivative: [1-2] scale mant `q0_15`, [3] scale exp int8 (0 - 15). Integral: [1-2] 1 − leak mant12, [3] input shift int8 (≤ 1), [4] 1 − leak shift (0: no leak) |
 | 0x0A | `SLEW_RATE_LIMITER` | [0-1] maximum change per sample `raw_fx3` (≥ 0) |
 | 0x0B | `SAMPLE_AND_HOLD` | [0-1] period, [2-3] track time (samples, uint16) |
 | 0x0C | `DELAY` | [0-1] delay (samples, uint16, up to 4095) |
@@ -170,10 +171,17 @@ Voltage follower. The output stage (calibration, inversion, offset) still applie
 $y = V_{ref} + G (x - V_{ref})$ with $G = \text{mant} \cdot 2^{\text{exp}}$ (exp 0 - 15), computed as one multiply and one rounded shift.
 
 ### 0x02 1st-order filter
-RC low-pass or high-pass filter around Vref: a single-pole accumulator with $\alpha$ derived from $f_c$; the HPF output is the input minus the LPF state.
+RC low-pass, high-pass or all-pass (phase shifter) filter around Vref, implemented as a **TPT one-pole filter**: the integrator of the analog RC filter discretized with trapezoidal integration, which gives the bilinear-transform response (exact at $f_c$). With $g = \tan(\pi f_c / f_s)$ and $G = g / (1 + g)$:
+
+```
+v = G (x - s),   lp = v + s,   s = lp + v
+LPF = lp,  HPF = x - lp,  APF = lp - hp = 2 lp - x
+```
+
+The all-pass has gain 1 at every frequency and a phase of −90° at $f_c$ (0° to −180°). The state has 15 fractional bits like the Biquad states. $G \cdot 2^{12}$ is sent as a 12-bit mantissa (2048 - 4095) and a shift. Limits applied by the library: $f_s / 100000 \le f_c \le 0.24 f_s$.
 
 ### 0x03 Biquad (2nd-order filter)
-LPF, HPF, BPF (0 dB peak gain), notch, or unity (input passed through with the same CPU load, for profiling).
+LPF, HPF, BPF (0 dB peak gain), notch, all-pass (phase shifter, $x - 2k\,bp$: gain 1, −180° at $f_c$), or unity (input passed through with the same CPU load, for profiling).
 
 Implemented as a **TPT (topology-preserving transform) state-variable filter**: the integrators of an analog state-variable filter are discretized with trapezoidal integration, which gives the same response as a bilinear-transform biquad (Audio EQ Cookbook). With $g = \tan(\pi f_c / f_s)$ and $k = 1/Q$:
 
@@ -181,14 +189,14 @@ Implemented as a **TPT (topology-preserving transform) state-variable filter**: 
 v  = x - (k + g) s1 - s2,   hp = v / (1 + g k + g^2)
 bp = g hp + s1,   s1 = bp + g hp
 lp = g bp + s2,   s2 = lp + g bp
-LPF = lp,  HPF = hp,  BPF = k bp,  NOTCH = x - k bp
+LPF = lp,  HPF = hp,  BPF = k bp,  NOTCH = x - k bp,  APF = x - 2 k bp
 ```
 
 The signals are `raw_vref_fx3` and the two states have 15 fractional bits, so low cutoffs keep working without decimation. The coefficients are sent as 12-bit mantissas with shifts, so their resolution does not depend on $f_c$:
 
 | Bytes | Content |
 | --- | --- |
-| [0] | type: 0 LPF, 1 HPF, 2 BPF, 3 notch, 4 unity |
+| [0] | type: 0 LPF, 1 HPF, 2 BPF, 3 notch, 4 unity, 5 all-pass |
 | [1-2], [3] | $g \cdot 2^{12}$ = mant >> shift (mant 2048 - 4095) |
 | [4-5] | $k + g$, 10 fractional bits |
 | [6-7], [8] | $e = 1 - 1/(1 + g k + g^2)$ = mant >> shift |
@@ -202,17 +210,20 @@ Digital output route (GPIO). Window: HIGH when the input is above the upper or b
 ### 0x05 Clipper
 Limits the input to the lower - upper range (absolute voltages).
 
+* **Hard:** passes the input unchanged between the limits.
+* **Soft:** a cubic curve like the smooth saturation of a diode or transistor limiter. With the center $c$ = (upper + lower) / 2, $h$ = upper − $c$ and $d = x - c$: $y = c + d - \frac{4 d^3}{27 h^2}$ for $|d| < 1.5 h$, and the limit beyond. The gain is 1 at the center and the curve meets the limit with zero slope.
+
 ### 0x06 Rectifier
 Folds the signal at Vref. Full-wave positive: $V_{ref} + |x - V_{ref}|$; half-wave positive: $\max(x, V_{ref})$; negative polarity mirrors both.
 
 ### 0x07 Envelope follower
-Follows the peak of the input above Vref (positive) or below Vref (negative) and decays by the decay factor per sample. A decay factor of 1.0 (32767) holds the peak. The tracked magnitude keeps 15 fractional bits below `raw_fx3`, so long decays continue all the way down instead of stopping at the truncation. The output is Vref plus the tracked magnitude for both polarities.
+Follows the peak of the input above Vref (positive) or below Vref (negative) and decays by the decay factor $d$ per sample. $1 - d$ is sent as a 12-bit mantissa and a shift, so time constants from a few samples to minutes have the same resolution; $1 - d = 0$ holds the peak. The tracked magnitude keeps 15 fractional bits below `raw_fx3`, so long decays continue all the way down instead of stopping at the truncation. The output is Vref plus the tracked magnitude for both polarities.
 
 ### 0x08 LOG
 Logarithmic amplifier: $y = V_{ref} + \text{slope} \cdot \log_{10}(x / \text{unit})$. Antilogarithmic: $y = \text{unit} \cdot 10^{(x - V_{ref}) / \text{slope}}$. Implemented with per-mode tables (64 segments per octave) built when the mode is configured, and linear interpolation.
 
 ### 0x09 Math
-Derivative: $y = V_{ref} + s \cdot \Delta x$ with $s = \text{mant} \cdot 2^{\text{exp}}$. Leaky integrator: every sample, the state is multiplied by the leak factor (mant) and the input relative to Vref, scaled by $2^{\text{exp}}$ (exp ≤ 1; negative values attenuate), is added. A leak factor of 1.0 (32767) gives a pure integrator. The state keeps 14 fractional bits below `raw_fx3`, so small inputs are integrated and the state decays to Vref without a dead band. The output is Vref plus the state.
+Derivative: $y = V_{ref} + s \cdot \Delta x$ with $s = \text{mant} \cdot 2^{\text{exp}}$. Leaky integrator: every sample, the state is multiplied by the leak factor $a$ and the input relative to Vref, scaled by $2^{\text{shift}}$ (shift ≤ 1; negative values attenuate), is added. $1 - a$ is sent as a 12-bit mantissa and a shift; $1 - a = 0$ gives a pure integrator. The state keeps 14 fractional bits below `raw_fx3`, so small inputs are integrated and the state decays to Vref without a dead band. The output is Vref plus the state.
 
 ### 0x0A Slew rate limiter
 Limits the change of the output per sample (`raw_fx3`, so the smallest step is 1/8 LSB per processed sample). The output starts at mid-scale when the mode is selected.
