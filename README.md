@@ -1,23 +1,24 @@
 # Analog Mimic (analog-mimic)
 
+<a href="hardware/assembly/mimic01_20260522/mimic01_photo.jpg">
+  <img src="hardware/assembly/mimic01_20260522/mimic01_photo.jpg" alt="Analog Mimic 01" width="400">
+</a>
+
 <a href="https://certification.oshwa.org/jp000025.html">
   <img src="docs/oshw/certification-mark-JP000025-stacked.svg" alt="OSHWA certified open source hardware JP000025" height="100">
   <img src="docs/oshw/oshw_facts.svg" alt="Open source licenses: Hardware CERN-OHL-S-2.0, Software GPL-3.0-only, Documentation CC-BY-4.0" height="100">
 </a>
 
-<a href="hardware/assembly/mimic01_20260522/mimic01_photo.jpg">
-  <img src="hardware/assembly/mimic01_20260522/mimic01_photo.jpg" alt="Analog Mimic 01" width="400">
-</a>
-
-![Analog Mimic concept](hardware/assembly/mimic01_20260522/mimic_concept.svg)
-
 ## Overview
+
 Analog Mimic is a drop-in, programmable analog front-end (AFE) module powered by a robust "MCU + DSP" architecture. It is designed to bring software-defined flexibility to physical analog boundaries.
 
 **Key Features:**
 * **Versatile Emulation:** Physically mimics diverse analog circuits (e.g., filters, amplifiers, comparators).
 * **Instant Reconfiguration:** Fully reconfigurable on the fly with a single I²C command.
 * **Drop-in Ready:** Designed to be easily integrated into your existing hardware prototyping workflow.
+
+![Analog Mimic concept](hardware/assembly/mimic01_20260522/mimic_concept.svg)
 
 ## Why This Exists
 
