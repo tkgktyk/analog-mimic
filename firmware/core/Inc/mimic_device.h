@@ -47,7 +47,8 @@ typedef struct {
 
     // --- 2. Live Telemetry (Written by Sampling ISR / I2C ISR, Read by I2C ISR / Main) ---
     volatile uint8_t  status;                 /**< System status flags & transient error bits */
-    volatile uint16_t adc_val_fx3;            /**< DSP input, raw_fx3 (2^N average when decimated) */
+    volatile uint32_t adc_sample;             /**< DSP input: bits 31-16 sequence number,
+                                                   bits 15-0 adc_val_fx3 (2^N average when decimated) */
     volatile uint16_t cpu_cycles_max;         /**< Peak-hold execution cycle counter for profiling */
 
     // --- 3. Main Loop Task Triggers (Latched by I2C ISR on STOP, Consumed by Main Loop) ---
@@ -127,11 +128,12 @@ void MimicDevice_SetStatusFlag(uint8_t flag);
 uint8_t MimicDevice_GetAndClearStatusFlag(void);
 
 /**
- * @brief Retrieves the latest sampled ADC value from the device context.
+ * @brief Retrieves the latest DSP input and its sequence number in one 32-bit read
+ *        (bits 31-16: sequence number, bits 15-0: raw_fx3), so the two always match.
  */
-static inline __attribute__((always_inline)) uint16_t MimicDevice_GetAdcVal(void) {
+static inline __attribute__((always_inline)) uint32_t MimicDevice_GetAdcSample(void) {
     extern MimicDevice_t mimic_device;
-    return mimic_device.adc_val_fx3;
+    return mimic_device.adc_sample;
 }
 
 /**
@@ -148,9 +150,14 @@ static inline __attribute__((always_inline)) uint16_t MimicDevice_PopCpuCyclesMa
 // Fast Inline Accessors for High-Frequency Sampling ISR
 // =========================================================
 
+/**
+ * @brief Stores the DSP input (raw_fx3) and advances the sequence number, in one 32-bit
+ *        store (atomic on Cortex-M0+). Only the sampling ISR writes adc_sample.
+ */
 static inline __attribute__((always_inline)) void MimicDevice_SetAdcVal_ISR(uint16_t x_raw_fx3) {
     extern MimicDevice_t mimic_device;
-    mimic_device.adc_val_fx3 = x_raw_fx3;
+    uint32_t seq = (mimic_device.adc_sample + 0x10000u) & 0xFFFF0000u;
+    mimic_device.adc_sample = seq | x_raw_fx3;
 }
 
 static inline __attribute__((always_inline)) void MimicDevice_SetErrorFlag_ISR(uint8_t error_flag) {

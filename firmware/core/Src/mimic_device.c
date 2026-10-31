@@ -71,7 +71,7 @@
 MimicDevice_t mimic_device = {
     .registers              = {0},
     .status                 = 0x00,
-    .adc_val_fx3            = 0,
+    .adc_sample             = 0,
     .cpu_cycles_max         = 0,
     .pending_dsp_update     = false,
     .pending_system_command = MIMIC_CMD_NOP

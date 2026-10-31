@@ -94,13 +94,14 @@
 #define MIMIC_REG_SYSTEM_UID              MIMIC_REG_SYSTEM_UID_3
 // --- Dynamic telemetry ---
 #define MIMIC_REG_SYSTEM_STATUS           0x0A
-#define MIMIC_REG_SYSTEM_ADC_VAL_H        0x0B // DSP input, raw_fx3 (averaged over 2^N when decimated)
-#define MIMIC_REG_SYSTEM_ADC_VAL_L        0x0C
+#define MIMIC_REG_SYSTEM_ADC_SEQ          0x0B // Sequence number of ADC_VAL; reading it latches SEQ + VAL
+#define MIMIC_REG_SYSTEM_ADC_VAL_H        0x0C // DSP input, raw_fx3 (averaged over 2^N when decimated)
+#define MIMIC_REG_SYSTEM_ADC_VAL_L        0x0D
 #define MIMIC_REG_SYSTEM_ADC_VAL          MIMIC_REG_SYSTEM_ADC_VAL_H
-#define MIMIC_REG_SYSTEM_CPU_CYCLES_H     0x0D
-#define MIMIC_REG_SYSTEM_CPU_CYCLES_L     0x0E
+#define MIMIC_REG_SYSTEM_CPU_CYCLES_H     0x0E
+#define MIMIC_REG_SYSTEM_CPU_CYCLES_L     0x0F
 #define MIMIC_REG_SYSTEM_CPU_CYCLES       MIMIC_REG_SYSTEM_CPU_CYCLES_H
-#define MIMIC_REG_SYSTEM_END              0x0E // End of read-only system registers
+#define MIMIC_REG_SYSTEM_END              0x0F // End of read-only system registers
 
 // --- Common Parameters (Applied globally across all DSP modes) ---
 #define MIMIC_REG_GLOBAL_START            0x10
@@ -215,9 +216,16 @@
 //   delay) do not use Vref.
 //
 // Register formats
-//   0x0B-0x0C  SYSTEM_ADC_VAL   uint16  raw_fx3  DSP input: the latest ADC sample, or the
-//                                                rounded average of 2^N samples when
-//                                                decimated (latched on the 0x0B read)
+//   0x0B       SYSTEM_ADC_SEQ   uint8   -        Counts ADC_VAL updates (wraps at 256): once per
+//                                                sample, or once per 2^N block when decimated.
+//                                                Reading 0x0B latches SEQ and VAL together; read
+//                                                0x0B - 0x0D in one transaction.
+//   0x0C-0x0D  SYSTEM_ADC_VAL   uint16  raw_fx3  DSP input (latched by the 0x0B read): the latest
+//                                                ADC sample, or the rounded average of 2^N samples
+//                                                when decimated.
+//              Averaging without I2C traffic: read 0x0B - 0x0D (SEQ c0), wait in silence,
+//              read 0x0B - 0x0D again (SEQ c, VAL v). If c - c0 >= 2, v is the average of a
+//              block measured entirely in silence.
 //   0x12-0x13  GLOBAL_OFFSET    int16   raw_fx3  User output offset
 //   0x14-0x15  GLOBAL_VREF      int16   raw_fx3  Common reference voltage
 //   0x30-0x31  NVM_GAIN         uint16  uq1_15   Output gain calibration

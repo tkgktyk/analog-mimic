@@ -113,7 +113,7 @@ The gain and offset calibration values are stored in flash (NVM) and loaded at s
 
 ## 4. I²C Interface
 
-The module is an I²C target at address 0x40 (7-bit; the library adds a jumper offset of 0 - 15). Registers are 8-bit wide and addressed with auto-increment. Registers 0x00 - 0x0F are read-only; 0x10 - 0x3F are kept in RAM and can be read back.
+The module is an I²C target at address 0x40 - 0x43 (7-bit), selected by two solder jumpers on mimic01 and read at power-up (mimic00: 0x40). Registers are 8-bit wide and addressed with auto-increment. Registers 0x00 - 0x0F are read-only; 0x10 - 0x3F are kept in RAM and can be read back.
 
 ### Register map
 
@@ -124,8 +124,9 @@ The module is an I²C target at address 0x40 (7-bit; the library adds a jumper o
 | 0x02 - 0x05 | `SYSTEM_BUILD_DATE` | R | uint32 | Firmware build date, hex `0xYYYYMMDD` (e.g. 0x20261025). |
 | 0x06 - 0x09 | `SYSTEM_UID` | R | uint32 | Unit ID: 32-bit FNV-1a hash of the MCU unique ID. |
 | 0x0A | `SYSTEM_STATUS` | R/C | flags | Bit 0: ready, bit 1: signal saturation, bit 2: I²C error, bit 3: ADC overrun. Error bits are cleared on read. |
-| 0x0B - 0x0C | `SYSTEM_ADC_VAL` | R | uint16 | DSP input in raw_fx3: the latest ADC sample, or the rounded average of 2^N samples when decimated (latched on the high-byte read). |
-| 0x0D - 0x0E | `SYSTEM_CPU_CYCLES` | R/C | uint16 | Peak cycles of the primary ISR since the last read. |
+| 0x0B | `SYSTEM_ADC_SEQ` | R | uint8 | Sequence number of `SYSTEM_ADC_VAL` (+1 per update, wraps at 256). Reading it latches SEQ and VAL together; read 0x0B - 0x0D in one transaction. |
+| 0x0C - 0x0D | `SYSTEM_ADC_VAL` | R | uint16 `raw_fx3` | DSP input (latched by the 0x0B read): the latest ADC sample, or the rounded average of 2^N samples when decimated. |
+| 0x0E - 0x0F | `SYSTEM_CPU_CYCLES` | R/C | uint16 | Peak cycles of the primary ISR since the last read. |
 | 0x10 | `GLOBAL_FLAGS` | R/W | flags | Bit 7: invert output, bit 6: output open (Hi-Z), bit 4: servo enable (1x series only, reserved). |
 | 0x11 | `GLOBAL_DECIMATION_N` | R/W | uint8 | Processing rate = 200 kHz / 2^N, N = 0 - 16 (larger values are clamped). |
 | 0x12 - 0x13 | `GLOBAL_OFFSET` | R/W | int16 `raw_fx3` | User output offset. |
