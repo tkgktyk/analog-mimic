@@ -238,12 +238,12 @@
 //   COMPARATOR         [0] type (MIMIC_COMPARATOR_*), [1-2] upper raw_fx3, [3-4] lower raw_fx3
 //   CLIPPER            [0-1] upper raw_fx3, [2-3] lower raw_fx3
 //   RECTIFIER          [0] type (MIMIC_RECT_*), [1] polarity (MIMIC_POLARITY_*)
-//   ENVELOPE_FOLLOWER  [0-1] decay q0_15, [2] polarity
+//   ENVELOPE_FOLLOWER  [0-1] decay q0_15 (32767 = 1.0: peak hold), [2] polarity
 //   LOG                [0] type (MIMIC_LOG_TYPE_*), [1-2] slope raw_fx3 per decade
 //                      (signed, negative = inverting), [3-4] unit raw_fx3 (> 0)
 //   MATH               [0] type (MIMIC_MATH_*), [1-2] mant q0_15, [3] exp int8
-//                      (derivative: scale = mant * 2^exp, integral: leak = mant,
-//                       input shift = exp <= 1)
+//                      (derivative: scale = mant * 2^exp, integral: leak = mant
+//                       (32767 = 1.0: no leak), input shift = exp <= 1)
 //   SLEW_RATE_LIMITER  [0-1] max change per sample raw_fx3 (>= 0)
 //   SAMPLE_AND_HOLD    [0-1] period, [2-3] track (samples, uint16)
 //   DELAY              [0-1] delay (samples, uint16)

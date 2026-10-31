@@ -66,7 +66,7 @@ static bool PerformWriteReg(uint8_t addr, uint8_t val) {
  * @return The value of the requested register, or I2C_READ_ERROR_VALUE on error.
  */
 static uint8_t PerformReadReg(uint8_t addr) {
-    static uint16_t latched_adc_val = 0;
+    static uint16_t latched_adc_val_fx3 = 0;
     static uint16_t latched_cpu_cycles = 0;
 
     // 1. Intercept and resolve specialized virtual registers (Read-Only Info & Telemetry)
@@ -84,10 +84,10 @@ static uint8_t PerformReadReg(uint8_t addr) {
 
         // --- 16-bit DSP input (raw_fx3; 2^N average when decimated) ---
         case MIMIC_REG_SYSTEM_ADC_VAL_H:
-            latched_adc_val = MimicDevice_GetAdcVal(); // Latch atomic context upon high-byte access
-            return (uint8_t)(latched_adc_val >> 8);
+            latched_adc_val_fx3 = MimicDevice_GetAdcVal(); // Latch atomic context upon high-byte access
+            return (uint8_t)(latched_adc_val_fx3 >> 8);
         case MIMIC_REG_SYSTEM_ADC_VAL_L:
-            return (uint8_t)(latched_adc_val & 0xFF);  // Return latched low-byte context safely
+            return (uint8_t)(latched_adc_val_fx3 & 0xFF);  // Return latched low-byte context safely
 
         // --- 16-bit Execution Profiler Cycle Count Read Out ---
         case MIMIC_REG_SYSTEM_CPU_CYCLES_H:

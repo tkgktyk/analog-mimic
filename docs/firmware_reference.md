@@ -11,11 +11,13 @@ Every sample period (200 kHz, 5 µs) the firmware runs the following chain in th
    ↓
 (1) ADC conversion, started by the sampling timer (12-bit raw code)
    ↓
-(2) Decimation (optional): average 2^N samples, run (3)-(5) once per block
+(2) Conversion to raw_fx3 (x 8); with decimation, the rounded average of 2^N
+    samples, and (3)-(5) run once per block
    ↓
-(3) Mode-specific DSP core (32-bit integer arithmetic)
+(3) Mode-specific DSP core (32-bit integer arithmetic, raw_fx3 in and out)
    ↓
-(4) Output stage: calibration gain, inversion, DC offset (user + calibration), rounding
+(4) Output stage: calibration gain, inversion, DC offset (user + calibration),
+    and the only rounding to the integer DAC code
    ↓
 (5) Saturation to 0 - 4095
    ↓
@@ -73,7 +75,7 @@ The DSP core uses no floating point. All states and arithmetic are 32-bit intege
 | Name | Meaning |
 | --- | --- |
 | `raw` | ADC / DAC code. 0 = 0 V, 4096 = VDD (integer, 0 - 4095). 1 LSB = VDD / 4096. |
-| `raw_fx3` | `raw` with 3 fractional bits (1 LSB = 8), signed 16-bit, -4096 to +4095.875 LSB. **Every voltage at the interface uses this format.** |
+| `raw_fx3` | `raw` with 3 fractional bits (1 LSB = 8), signed 16-bit, -4096 to +4095.875 LSB. **Every voltage at the interface and every signal inside the DSP uses this format**; only the ADC read and the DAC write use integer codes. |
 | `raw_vref_fx3` | `raw_fx3` relative to Vref (internal). |
 | `q0_15` | Signed coefficient, 15 fractional bits (-1.0 to < 1.0). |
 | `uq1_15` | Unsigned gain, 15 fractional bits (0 to < 2.0, 1.0 = 32768). |
@@ -97,11 +99,11 @@ Changing Vref does not reset any state; for example, a slow HPF settles to the n
 
 ### Output stage
 
-The output stage combines the calibration gain, the inversion, the DC offsets and the rounding in one multiply-add:
+The DSP core returns `raw_fx3`; the output stage combines the calibration gain, the inversion, the DC offsets and the rounding in one multiply-add, so the signal is rounded to an integer code only once:
 
-$$\text{out} = \left\lfloor \frac{y \cdot G + O}{2^{15}} \right\rfloor$$
+$$\text{out} = \left\lfloor \frac{y \cdot G + O}{2^{18}} \right\rfloor$$
 
-where *G* is the calibration gain (`uq1_15`, negative when the output is inverted) and *O* holds the user offset and the calibration offset (`raw_fx3`, scaled to 15 fractional bits) plus 0.5 LSB for rounding. The result is saturated to 0 - 4095.
+where *y* is the DSP output (`raw_fx3`, limited to ±8192 LSB), *G* is the calibration gain (`uq1_15`, negative when the output is inverted) and *O* holds the user offset and the calibration offset (`raw_fx3`, scaled to 15 more fractional bits) plus 0.5 LSB for rounding. To keep every product within 32 bits, *G* is split as ±1.0 + δ and *O* into its `raw_fx3` part and the remaining fraction; the result is the same as the formula above. The result is saturated to 0 - 4095.
 
 ### Calibration
 
@@ -122,7 +124,7 @@ The module is an I²C target at address 0x40 (7-bit; the library adds a jumper o
 | 0x02 - 0x05 | `SYSTEM_BUILD_DATE` | R | uint32 | Firmware build date, hex `0xYYYYMMDD` (e.g. 0x20261025). |
 | 0x06 - 0x09 | `SYSTEM_UID` | R | uint32 | Unit ID: 32-bit FNV-1a hash of the MCU unique ID. |
 | 0x0A | `SYSTEM_STATUS` | R/C | flags | Bit 0: ready, bit 1: signal saturation, bit 2: I²C error, bit 3: ADC overrun. Error bits are cleared on read. |
-| 0x0B - 0x0C | `SYSTEM_ADC_VAL` | R | uint16 | Latest ADC code (latched on the high-byte read). |
+| 0x0B - 0x0C | `SYSTEM_ADC_VAL` | R | uint16 | DSP input in raw_fx3: the latest ADC sample, or the rounded average of 2^N samples when decimated (latched on the high-byte read). |
 | 0x0D - 0x0E | `SYSTEM_CPU_CYCLES` | R/C | uint16 | Peak cycles of the primary ISR since the last read. |
 | 0x10 | `GLOBAL_FLAGS` | R/W | flags | Bit 7: invert output, bit 6: output open (Hi-Z), bit 4: servo enable (1x series only, reserved). |
 | 0x11 | `GLOBAL_DECIMATION_N` | R/W | uint8 | Processing rate = 200 kHz / 2^N, N = 0 - 16 (larger values are clamped). |
@@ -164,7 +166,7 @@ Payload offsets are relative to `MODE_PAYLOAD` (0x21). Modes that group several 
 Voltage follower. The output stage (calibration, inversion, offset) still applies.
 
 ### 0x01 PGA
-$y = V_{ref} + G (x - V_{ref})$ with $G = \text{mant} \cdot 2^{\text{exp}}$.
+$y = V_{ref} + G (x - V_{ref})$ with $G = \text{mant} \cdot 2^{\text{exp}}$ (exp 0 - 15), computed as one multiply and one rounded shift.
 
 ### 0x02 1st-order filter
 RC low-pass or high-pass filter around Vref: a single-pole accumulator with $\alpha$ derived from $f_c$; the HPF output is the input minus the LPF state.
@@ -203,19 +205,19 @@ Limits the input to the lower - upper range (absolute voltages).
 Folds the signal at Vref. Full-wave positive: $V_{ref} + |x - V_{ref}|$; half-wave positive: $\max(x, V_{ref})$; negative polarity mirrors both.
 
 ### 0x07 Envelope follower
-Follows the peak of the input above Vref (positive) or below Vref (negative) and decays by the decay factor per sample. A decay factor of 1.0 holds the peak. The output is Vref plus the tracked magnitude for both polarities.
+Follows the peak of the input above Vref (positive) or below Vref (negative) and decays by the decay factor per sample. A decay factor of 1.0 (32767) holds the peak. The tracked magnitude keeps 15 fractional bits below `raw_fx3`, so long decays continue all the way down instead of stopping at the truncation. The output is Vref plus the tracked magnitude for both polarities.
 
 ### 0x08 LOG
 Logarithmic amplifier: $y = V_{ref} + \text{slope} \cdot \log_{10}(x / \text{unit})$. Antilogarithmic: $y = \text{unit} \cdot 10^{(x - V_{ref}) / \text{slope}}$. Implemented with per-mode tables (64 segments per octave) built when the mode is configured, and linear interpolation.
 
 ### 0x09 Math
-Derivative: $y = V_{ref} + s \cdot \Delta x$ with $s = \text{mant} \cdot 2^{\text{exp}}$. Leaky integrator: every sample, the state is multiplied by the leak factor (mant) and the input relative to Vref, scaled by $2^{\text{exp}}$ (exp ≤ 1; negative values attenuate), is added. The output is Vref plus the state.
+Derivative: $y = V_{ref} + s \cdot \Delta x$ with $s = \text{mant} \cdot 2^{\text{exp}}$. Leaky integrator: every sample, the state is multiplied by the leak factor (mant) and the input relative to Vref, scaled by $2^{\text{exp}}$ (exp ≤ 1; negative values attenuate), is added. A leak factor of 1.0 (32767) gives a pure integrator. The state keeps 14 fractional bits below `raw_fx3`, so small inputs are integrated and the state decays to Vref without a dead band. The output is Vref plus the state.
 
 ### 0x0A Slew rate limiter
-Limits the change of the output per sample.
+Limits the change of the output per sample (`raw_fx3`, so the smallest step is 1/8 LSB per processed sample). The output starts at mid-scale when the mode is selected.
 
 ### 0x0B Sample & hold
-Tracks the input for the first *track* samples of every *period* samples and holds the last value for the rest. track = 1 gives a sample & hold; larger values give a track & hold.
+Tracks the input for the first *track* samples of every *period* samples and holds the last value for the rest. track = 1 gives a sample & hold; larger values give a track & hold. The held value starts at mid-scale when the mode is selected.
 
 ### 0x0C Delay
 Delays the input by the given number of samples (ring buffer of 4096 samples).

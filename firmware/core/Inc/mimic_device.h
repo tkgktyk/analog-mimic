@@ -47,7 +47,7 @@ typedef struct {
 
     // --- 2. Live Telemetry (Written by Sampling ISR / I2C ISR, Read by I2C ISR / Main) ---
     volatile uint8_t  status;                 /**< System status flags & transient error bits */
-    volatile uint16_t adc_val;                /**< DSP input, raw_fx3 (2^N average when decimated) */
+    volatile uint16_t adc_val_fx3;            /**< DSP input, raw_fx3 (2^N average when decimated) */
     volatile uint16_t cpu_cycles_max;         /**< Peak-hold execution cycle counter for profiling */
 
     // --- 3. Main Loop Task Triggers (Latched by I2C ISR on STOP, Consumed by Main Loop) ---
@@ -131,7 +131,7 @@ uint8_t MimicDevice_GetAndClearStatusFlag(void);
  */
 static inline __attribute__((always_inline)) uint16_t MimicDevice_GetAdcVal(void) {
     extern MimicDevice_t mimic_device;
-    return mimic_device.adc_val;
+    return mimic_device.adc_val_fx3;
 }
 
 /**
@@ -150,7 +150,7 @@ static inline __attribute__((always_inline)) uint16_t MimicDevice_PopCpuCyclesMa
 
 static inline __attribute__((always_inline)) void MimicDevice_SetAdcVal_ISR(uint16_t x_raw_fx3) {
     extern MimicDevice_t mimic_device;
-    mimic_device.adc_val = x_raw_fx3;
+    mimic_device.adc_val_fx3 = x_raw_fx3;
 }
 
 static inline __attribute__((always_inline)) void MimicDevice_SetErrorFlag_ISR(uint8_t error_flag) {

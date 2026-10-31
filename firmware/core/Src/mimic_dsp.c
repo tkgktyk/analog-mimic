@@ -60,7 +60,12 @@ static volatile uint32_t mimic_output_slot = MIMIC_ADC_MID_VALUE;
 // keep dsp_out * delta + offset_frac within int32 (see MimicDSP_ProcessSample).
 #define OUT_GUARD_RAW       (2 * (MIMIC_ADC_MAX_VALUE + 1))                    // +/-8192 LSB
 #define OUT_GUARD_RAW_FX3   ((OUT_GUARD_RAW << RAW_FX3_FRAC_BITS) - 1)         // 65535
-#define INTEGRAL_STATE_LIM  (1 << 16)  // |state * leak_q0_15| < 2^31
+// Recursive states (integral, envelope) keep fractional bits below raw_fx3, so that the
+// truncation of state * coefficient does not accumulate (no dead band, smooth decay).
+#define INTEG_FRAC_BITS     14                                  // integral state: raw_vref_fx3 << 14
+#define INTEG_STATE_LIM     (((1 << 16) - 1) << INTEG_FRAC_BITS) // |y| < 2^16 raw_fx3 (= +/-8192 LSB)
+#define ENV_FRAC_BITS       15                                  // envelope state: raw_vref_fx3 << 15
+#define LEAK_ONE_Q0_15      32767   // leak / decay factor that means 1.0 (no leak: integrator, peak hold)
 
 // =========================================================
 // DSP Specific Constants
@@ -180,10 +185,11 @@ typedef struct {
 typedef struct {
     uint8_t type;             // Config: MIMIC_MATH_*
     int32_t scale_mant_q0_15; // Config: scale = mant * 2^exp
-    int32_t scale_exp;        // Config: integral input shift (<= 1)
-    int32_t shift;            // Config: derivative, 15 - exp (0 - 15)
+    int32_t shift;            // Config: derivative 15 - exp (0 - 15), integral input shift
     int32_t half;             // Config: derivative, rounding for shift
-    int32_t last_raw_vref_fx3;// State
+    int32_t leak_c_q0_15;     // Config: integral, 1 - leak (0 = no leak)
+    int32_t last_raw_vref_fx3;// State: derivative, previous input
+    int32_t state;            // State: integral, raw_vref_fx3 << INTEG_FRAC_BITS
 } Math_t;
 
 typedef struct {
@@ -197,9 +203,9 @@ typedef struct {
 } Clipper_t;
 
 typedef struct {
-    int32_t decay_q0_15;      // Config
+    int32_t decay_c_q0_15;    // Config: 1 - decay (0 = peak hold)
     uint8_t polarity;         // Config
-    int32_t last_raw_vref_fx3;// State
+    int32_t state;            // State: magnitude, raw_vref_fx3 << ENV_FRAC_BITS
 } Envelope_t;
 
 typedef struct {
@@ -364,16 +370,20 @@ static inline __attribute__((always_inline)) int32_t ProcessComparator(int32_t x
 static inline __attribute__((always_inline)) int32_t ProcessEnvelopeFollower(int32_t x_raw_fx3) {
     Envelope_t *p = &dsp_ctx.envelope;
 
-    int32_t in_raw_vref_fx3 = ToVrefFx3(x_raw_fx3);
-    if (p->polarity == MIMIC_POLARITY_NEGATIVE) in_raw_vref_fx3 = -in_raw_vref_fx3;
-    if (in_raw_vref_fx3 < 0) in_raw_vref_fx3 = 0;
+    int32_t mag = ToVrefFx3(x_raw_fx3);
+    if (p->polarity == MIMIC_POLARITY_NEGATIVE) mag = -mag;
+    if (mag < 0) mag = 0;                         // 0 - 32767: mag << 15 < 2^30
 
-    if (in_raw_vref_fx3 > p->last_raw_vref_fx3) {
-        p->last_raw_vref_fx3 = in_raw_vref_fx3;
+    // state *= decay, as state -= (1 - decay) * state. The integer part (<= 2^15) times
+    // decay_c (<= 2^15) stays within int32; the state decays all the way below 1/8 LSB.
+    int32_t e = p->state >> ENV_FRAC_BITS;
+    if (mag > e) {
+        p->state = mag << ENV_FRAC_BITS;
     } else {
-        p->last_raw_vref_fx3 = (p->last_raw_vref_fx3 * p->decay_q0_15) >> Q15_FRAC_BITS;
+        p->state -= e * p->decay_c_q0_15;
     }
-    return FromVrefFx3(p->last_raw_vref_fx3);   // magnitude above Vref (same for both polarities)
+    // magnitude above Vref (same for both polarities)
+    return FromVrefFx3((p->state + (1 << (ENV_FRAC_BITS - 1))) >> ENV_FRAC_BITS);
 }
 
 static inline __attribute__((always_inline)) int32_t ProcessClipper(int32_t x_raw_fx3) {
@@ -431,7 +441,7 @@ static inline __attribute__((always_inline)) int32_t ProcessMath(int32_t x_raw_f
     Math_t *p = &dsp_ctx.math;
 
     int32_t in_raw_vref_fx3 = ToVrefFx3(x_raw_fx3);
-    int32_t s = p->scale_exp;
+    int32_t s = p->shift;
 
     if (p->type == MIMIC_MATH_DERIVATIVE) {
         // y = Vref + scale * (x[n] - x[n-1]), rounded once.
@@ -443,11 +453,16 @@ static inline __attribute__((always_inline)) int32_t ProcessMath(int32_t x_raw_f
         return FromVrefFx3(ClampI32(out_raw_vref_fx3, OUT_GUARD_RAW_FX3));
     }
 
-    // Integral (s <= 1, limited by UpdateParameters)
-    int32_t history_leaked = (p->last_raw_vref_fx3 * p->scale_mant_q0_15) >> Q15_FRAC_BITS;
-    int32_t input_scaled = (s >= 0) ? (in_raw_vref_fx3 << s) : (in_raw_vref_fx3 >> -s);
-    p->last_raw_vref_fx3 = ClampI32(history_leaked + input_scaled, INTEGRAL_STATE_LIM);
-    return FromVrefFx3(p->last_raw_vref_fx3);
+    // Leaky integrator: y = leak * y + 2^exp * d, as y += 2^exp * d - (1 - leak) * y.
+    // The state keeps INTEG_FRAC_BITS below raw_fx3: |state| < 2^30, |d << s| < 2^30,
+    // |y * leak_c| < 2^31.
+    int32_t in_term = (s >= 0) ? (in_raw_vref_fx3 << s) : (in_raw_vref_fx3 >> -s);
+    int32_t y = (p->state + (1 << (INTEG_FRAC_BITS - 1))) >> INTEG_FRAC_BITS;
+    int32_t state = p->state + in_term
+                  - ((y * p->leak_c_q0_15) >> (Q15_FRAC_BITS - INTEG_FRAC_BITS));
+    state = ClampI32(state, INTEG_STATE_LIM);
+    p->state = state;
+    return FromVrefFx3((state + (1 << (INTEG_FRAC_BITS - 1))) >> INTEG_FRAC_BITS);
 }
 
 // Slew-rate limiter: the output moves toward x by at most max_step per sample
@@ -587,6 +602,14 @@ static void ConfigureLog(const uint8_t *p) {
     }
 }
 
+// 1 - factor for a leak / decay factor in q0_15. 32767 (1.0 from the library) means no
+// leak: a pure integrator, or a peak hold.
+static int32_t LeakToComplement(int32_t factor_q0_15) {
+    if (factor_q0_15 >= LEAK_ONE_Q0_15) return 0;
+    if (factor_q0_15 < 0) factor_q0_15 = 0;
+    return (1 << Q15_FRAC_BITS) - factor_q0_15;
+}
+
 // mant * 2^exp as (v * mant + half) >> shift, exp limited to 0 - 15 (gain < 2^15)
 static void MantExpToShift(int32_t exp, int32_t *shift, int32_t *half) {
     if (exp < 0) exp = 0;      // the mantissa already covers |gain| < 1
@@ -672,10 +695,17 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
         case MIMIC_MODE_ID_MATH: {
             int32_t exp = (int8_t)*(p + 3);
             dsp_ctx.math.type = *(p + 0);
-            if (dsp_ctx.math.type == MIMIC_MATH_INTEGRAL && exp > 1) exp = 1;
             dsp_ctx.math.scale_mant_q0_15 = ParseS16(p + 1);
-            dsp_ctx.math.scale_exp        = exp;
-            MantExpToShift(exp, &dsp_ctx.math.shift, &dsp_ctx.math.half);
+            if (dsp_ctx.math.type == MIMIC_MATH_INTEGRAL) {
+                // Input shift exp <= 1, applied to the state with INTEG_FRAC_BITS
+                if (exp > 1) exp = 1;
+                if (exp < -(INTEG_FRAC_BITS + 16)) exp = -(INTEG_FRAC_BITS + 16);
+                dsp_ctx.math.shift        = INTEG_FRAC_BITS + exp;
+                dsp_ctx.math.half         = 0;
+                dsp_ctx.math.leak_c_q0_15 = LeakToComplement(dsp_ctx.math.scale_mant_q0_15);
+            } else {
+                MantExpToShift(exp, &dsp_ctx.math.shift, &dsp_ctx.math.half);
+            }
             break;
         }
 
@@ -696,7 +726,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
             break;
 
         case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:
-            dsp_ctx.envelope.decay_q0_15 = ParseS16(p + 0);
+            dsp_ctx.envelope.decay_c_q0_15 = LeakToComplement(ParseS16(p + 0));
             dsp_ctx.envelope.polarity    = (uint8_t)*(p + 2);
             break;
 
