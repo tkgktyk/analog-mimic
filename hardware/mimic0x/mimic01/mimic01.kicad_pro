@@ -76,7 +76,12 @@
           "width": 0.0
         }
       ],
-      "drc_exclusions": [],
+      "drc_exclusions": [
+        [
+          "lib_footprint_issues|152540198|101240857|30e9f303-1537-4365-8246-8534ef83156c|00000000-0000-0000-0000-000000000000",
+          "OSHWA mark library intentionally not distributed"
+        ]
+      ],
       "meta": {
         "version": 2
       },

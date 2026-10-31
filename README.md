@@ -1,6 +1,13 @@
 # Analog Mimic (analog-mimic)
 
-![Analog Mimic01](hardware/assembly/mimic01_20260522/mimic01_photo.jpg)
+<a href="https://certification.oshwa.org/jp000025.html">
+  <img src="docs/oshw/certification-mark-JP000025-stacked.svg" alt="OSHWA certified open source hardware JP000025" height="100">
+  <img src="docs/oshw/oshw_facts.svg" alt="Open source licenses: Hardware CERN-OHL-S-2.0, Software GPL-3.0-only, Documentation CC-BY-4.0" height="100">
+</a>
+
+<a href="hardware/assembly/mimic01_20260522/mimic01_photo.jpg">
+  <img src="hardware/assembly/mimic01_20260522/mimic01_photo.jpg" alt="Analog Mimic 01" width="400">
+</a>
 
 ![Analog Mimic concept](hardware/assembly/mimic01_20260522/mimic_concept.svg)
 
@@ -40,7 +47,7 @@ provides an entry path for learners who arrived through Arduino-style digital
 prototyping and have not yet worked with analog signal chains.
 
 ## Hardware Concept
-* **Form Factor:** Pmod Type 6 (I²C) compatible layout with a compact footprint (35.56 mm × 20 mm).
+* **Form Factor:** Pmod-style 6-pin connector with a compact footprint (35.56 mm × 20 mm). SCL, SDA, GND and VCC follow the Pmod Type 6 (I²C) pinout; pins 1 and 2 carry GND and AOUT instead of the optional INT and RESET signals.
 * **On-Chip Integration:** Seamless integration of internal operational amplifier-based input/output buffers, anti-aliasing filters (AAF), and anti-imaging filters (AIF) mapped directly alongside the high-speed processing core.
 
 ![Mimic01 Board](hardware/assembly/mimic01_20260522/mimic01.svg)
@@ -155,3 +162,14 @@ the authoritative description of the interface; any I²C master will do.
 The measurements of Sect. 4 were taken with an Arduino host performing a
 single reconfiguration before each acquisition: a second-order biquad
 filter on the analog route, and a comparator mode on the digital route.
+
+## Open Source Hardware Certification
+
+Analog Mimic is certified as open source hardware by the [Open Source Hardware Association (OSHWA)](https://certification.oshwa.org/).
+Each hardware revision is certified separately; firmware updates do not change the board revision or its certification.
+
+| Board | OSHWA UID | Certified | Hardware files | Notes |
+|-------|-----------|-----------|----------------|-------|
+| Mimic 01 | [JP000025](https://certification.oshwa.org/jp000025.html) | 2026-10-29 | [`hardware/assembly/mimic01_20260522/`](hardware/assembly/mimic01_20260522/) | Initial release |
+
+Licenses: hardware under CERN-OHL-S-2.0, firmware under GPL-3.0-only, documentation under CC BY 4.0. See [LICENSE](LICENSE) for details.

@@ -1,7 +1,12 @@
-Puya PY32F071 Firmware Driver Library
-  Copyright (c) 2019 Puya Semiconductor
-  Copyright (c) 2024 OpenPuya
-  Licensed under BSD-3-Clause  (以下ライセンス全文)
+# Puya PY32F071 Firmware Driver Library
+
+Copyright (c) 2019 Puya Semiconductor
+
+Copyright (c) 2024 OpenPuya
+
+Licensed under BSD-3-Clause
+
+---
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -27,3 +32,8 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+# The OSHW Certification Mark
+
+The OSHW Certification Mark (from oshwa/certification-mark, commit 7abc61d) is a trademark of OSHWA and is not covered by this repository’s licenses.
+Its use is governed by the OSHWA Certification Mark License Agreement.
