@@ -920,7 +920,14 @@ void MimicDSP_SetDecimation(uint8_t decimation_n) {
 // Configuration for Test and Debug Features
 #define ENABLE_DSP_PROFILING
 
+// DMA: inlined into the single DMA ISR.
+// CPU: one copy in RAM, called by the three route-specific ISRs after their output trigger
+//      (inlining it into each of them would place three copies in RAM).
+#ifdef MIMIC_ENGINE_CPU
+__attribute__((noinline, section(".ramfunc"))) static void SampleBody(void) {
+#else
 static inline __attribute__((always_inline)) void SampleBody(void) {
+#endif
 #ifdef ENABLE_HEARTBEAT
     static volatile uint32_t mimic_tc_count = 0;
     if (++mimic_tc_count >= 100000u) {      /* 0.5 sec at 200 kHz */
