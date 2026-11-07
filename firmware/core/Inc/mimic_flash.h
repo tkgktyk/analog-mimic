@@ -24,6 +24,7 @@
 #define MIMIC_FLASH_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
