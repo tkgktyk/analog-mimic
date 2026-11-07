@@ -104,9 +104,11 @@ static volatile __attribute__((aligned(256))) uint32_t ram_vector_table[VECTOR_T
 
 static ADC_HandleTypeDef hadc1;
 static DAC_HandleTypeDef hdac1;
-static TIM_HandleTypeDef htim1;
 static TIM_HandleTypeDef htim2;
+#ifdef ENABLE_DAC_PULSE
+static TIM_HandleTypeDef htim1;
 static TIM_HandleTypeDef htim15;
+#endif
 static OPA_HandleTypeDef hopa1;
 static OPA_HandleTypeDef hopa2;
 static OPA_HandleTypeDef hopa3;
@@ -141,9 +143,12 @@ static void MX_I2C1_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_DAC_Init(void);
 static void MX_OPA_Init(void);
-static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_TestPad_Init(void);
+#ifdef ENABLE_DAC_PULSE
+static void MX_TIM1_Init(void);
 static void MX_TIM15_Init(void);
+#endif
 #ifdef MIMIC_ENGINE_DMA
 static void MX_OutputDMA_Init(void);
 #endif
@@ -246,9 +251,8 @@ void Mimic_HW_Init(void)
     MX_ADC1_Init();
     MX_DAC_Init();
     MX_OPA_Init();
-    MX_TIM1_Init();
+    MX_TestPad_Init();
     MX_TIM2_Init();
-    MX_TIM15_Init();
 #ifdef MIMIC_ENGINE_DMA
     MX_OutputDMA_Init();
 #endif
@@ -615,6 +619,34 @@ static void MX_OPA_Init(void)
     HAL_OPA_Start(&hopa3);
 }
 
+/**
+ * @brief Test pad (PA2): sampling reference clock for the output timing build
+ *        (make dac, ENABLE_DAC_PULSE).
+ *
+ * TIM2 update resets TIM1; TIM1 TRGO clocks TIM15, which divides it by 2, so PA2
+ * (TIM15_CH1, AF0) carries a 100 kHz square wave that toggles at every sample.
+ * In the normal build the timers are not started and PA2 is left unconfigured.
+ * PB3 is not used: on mimic01 it is an I2C address jumper (A0).
+ */
+static void MX_TestPad_Init(void)
+{
+#ifdef ENABLE_DAC_PULSE
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    MX_TIM1_Init();
+    MX_TIM15_Init();
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    GPIO_InitStruct.Pin       = MIMIC_TEST_PAD_PIN;
+    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull      = GPIO_NOPULL;
+    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF0_TIM15;
+    HAL_GPIO_Init(MIMIC_TEST_PAD_PORT, &GPIO_InitStruct);
+#endif
+}
+
+#ifdef ENABLE_DAC_PULSE
 static void MX_TIM1_Init(void)
 {
     TIM_ClockConfigTypeDef sClock  = {0};
@@ -652,6 +684,39 @@ static void MX_TIM1_Init(void)
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
     __HAL_TIM_ENABLE(&htim1);
 }
+
+static void MX_TIM15_Init(void)
+{
+    TIM_SlaveConfigTypeDef sSlave = {0};
+    TIM_OC_InitTypeDef sConfigOC  = {0};
+
+    htim15.Instance               = TIM15;
+    htim15.Init.Prescaler         = 0;
+    htim15.Init.CounterMode       = TIM_COUNTERMODE_UP;
+    htim15.Init.Period            = 1;
+    htim15.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
+    htim15.Init.RepetitionCounter = 0;
+    htim15.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+    if (HAL_TIM_Base_Init(&htim15) != HAL_OK) Mimic_HW_ErrorTrap();
+
+    sSlave.SlaveMode    = TIM_SLAVEMODE_EXTERNAL1;
+    sSlave.InputTrigger = TIM_TS_ITR0;
+    if (HAL_TIM_SlaveConfigSynchro(&htim15, &sSlave) != HAL_OK) Mimic_HW_ErrorTrap();
+
+    sConfigOC.OCMode       = TIM_OCMODE_PWM1;
+    sConfigOC.Pulse        = 1;
+    sConfigOC.OCPolarity   = TIM_OCPOLARITY_HIGH;
+    sConfigOC.OCNPolarity  = TIM_OCNPOLARITY_HIGH;
+    sConfigOC.OCFastMode   = TIM_OCFAST_DISABLE;
+    sConfigOC.OCIdleState  = TIM_OCIDLESTATE_RESET;
+    sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+    if (HAL_TIM_PWM_ConfigChannel(&htim15, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) {
+        Mimic_HW_ErrorTrap();
+    }
+
+    HAL_TIM_PWM_Start(&htim15, TIM_CHANNEL_1);
+}
+#endif
 
 static void MX_TIM2_Init(void)
 {
@@ -692,45 +757,6 @@ static void MX_TIM2_Init(void)
         Mimic_HW_ErrorTrap();
     }
     HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_2);
-
-    // CH3: Reference edge for PA2
-    sConfigOC.Pulse = 100;
-    if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) {
-        Mimic_HW_ErrorTrap();
-    }
-    HAL_TIM_OC_Start(&htim2, TIM_CHANNEL_3);
-}
-
-static void MX_TIM15_Init(void)
-{
-    TIM_SlaveConfigTypeDef sSlave = {0};
-    TIM_OC_InitTypeDef sConfigOC  = {0};
-
-    htim15.Instance               = TIM15;
-    htim15.Init.Prescaler         = 0;
-    htim15.Init.CounterMode       = TIM_COUNTERMODE_UP;
-    htim15.Init.Period            = 1;
-    htim15.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
-    htim15.Init.RepetitionCounter = 0;
-    htim15.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
-    if (HAL_TIM_Base_Init(&htim15) != HAL_OK) Mimic_HW_ErrorTrap();
-
-    sSlave.SlaveMode    = TIM_SLAVEMODE_EXTERNAL1;
-    sSlave.InputTrigger = TIM_TS_ITR0;
-    if (HAL_TIM_SlaveConfigSynchro(&htim15, &sSlave) != HAL_OK) Mimic_HW_ErrorTrap();
-
-    sConfigOC.OCMode       = TIM_OCMODE_PWM1;
-    sConfigOC.Pulse        = 1;
-    sConfigOC.OCPolarity   = TIM_OCPOLARITY_HIGH;
-    sConfigOC.OCNPolarity  = TIM_OCNPOLARITY_HIGH;
-    sConfigOC.OCFastMode   = TIM_OCFAST_DISABLE;
-    sConfigOC.OCIdleState  = TIM_OCIDLESTATE_RESET;
-    sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
-    if (HAL_TIM_PWM_ConfigChannel(&htim15, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) {
-        Mimic_HW_ErrorTrap();
-    }
-
-    HAL_TIM_PWM_Start(&htim15, TIM_CHANNEL_1);
 }
 
 #ifdef MIMIC_ENGINE_DMA

@@ -97,7 +97,7 @@ To lower the barrier to entry for real-time digital signal processing, we provid
 ## DEMO: Analog Emulation
 ![Demo: Mimic01](hardware/assembly/mimic01_20260522/demo.png)
 
-## Reproducing the Measurements in the Manuscript
+## Measuring Output Timing
 
 This firmware accompanies a manuscript on output timing determinism,
 prepared for submission to IEEJ Transactions on Electronics, Information
@@ -138,12 +138,18 @@ The route is **not** a build option. The host selects the analog route
 reconfiguration, together with the topology and the coefficients. The four
 rows of Table 1 are therefore two builds, each exercised on both routes.
 
-### Measurement build
+### Output timing build
 
-The distributions of Sect. 4 were taken with `ENABLE_DAC_PULSE`, a toggle
-that overrides the emulated output so that every period carries a
-transition of known polarity. A firmware built without it emulates the
-selected circuit as usual and will not reproduce Fig. 4 and Fig. 5.
+`make dac` defines `ENABLE_DAC_PULSE`. The DSP keeps running as usual, but
+its result is replaced by a full-scale square wave (0 and 4095 on alternate
+DSP outputs), so that every period carries a transition of known polarity.
+The sampling reference clock (100 kHz, toggling at every sample) is driven
+on the PA2 test pad. Use it to measure the output timing against the
+sampling clock. A firmware built without it emulates the selected circuit
+as usual and leaves PA2 unused.
+
+The distributions of Sect. 4 of the manuscript were taken with this build
+of the firmware tagged `paper-v1`.
 
 ### Dependency
 

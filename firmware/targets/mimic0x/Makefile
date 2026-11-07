@@ -152,6 +152,8 @@ deploy_header:
 	  echo "- analog-mimic-arduino not found; skipping header deployment"; \
 	fi
 
+# Output timing build: the output is replaced by a full-scale square wave while the DSP
+# keeps running, and the sampling reference clock is driven on the PA2 test pad.
 dac:
 	$(MAKE) EXTRA_DEFS=-DENABLE_DAC_PULSE DAC_SUFFIX=_dacpulse all
 cpu:

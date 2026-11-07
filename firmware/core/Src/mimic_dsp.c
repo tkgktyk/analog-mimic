@@ -868,6 +868,8 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample(int
     }
 
 #ifdef ENABLE_DAC_PULSE
+    // Output timing build (make dac): the DSP result above is computed and then discarded;
+    // the output alternates between 0 and full scale at every DSP output.
     __asm volatile ("" : "+r" (final_out));
 
     static uint16_t dac_pulse = MIMIC_ADC_MIN_VALUE;
