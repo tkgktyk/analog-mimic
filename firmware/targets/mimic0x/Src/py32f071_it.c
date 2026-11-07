@@ -31,6 +31,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "py32f071_it.h"
 #include "py32f0xx_hal.h"
+#include "mimic0x_msp.h"
 
 /******************************************************************************/
 /* Cortex-M0+ Processor Interruption and Exception Handlers                  */
@@ -45,8 +46,7 @@ void NMI_Handler(void) {}
  * @brief This function handles Hard fault interrupt.
  */
 void HardFault_Handler(void) {
-  while (1) {
-  }
+  Mimic_HW_ErrorTrap();   /* Does not return */
 }
 
 /**

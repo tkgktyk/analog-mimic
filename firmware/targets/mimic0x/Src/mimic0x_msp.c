@@ -392,8 +392,24 @@ void Mimic_SetReadyLED(bool is_on)
 #endif
 }
 
+/**
+ * @brief Unrecoverable error: stops the sampling engine, releases the output (Hi-Z)
+ *        and blinks the Ready LED forever. Also called from HardFault_Handler().
+ *
+ * A fault during the shutdown re-enters here through HardFault_Handler() and skips
+ * straight to the blinking.
+ */
 void Mimic_HW_ErrorTrap(void)
 {
+    static volatile bool trapped = false;
+
+    __disable_irq();
+    if (!trapped) {
+        trapped = true;
+        Mimic_HW_StopEngine();
+        Mimic_HW_SetOutputRoute(MIMIC_OUT_OPEN);
+    }
+
     while (1) {
         Mimic_SetReadyLED(true);
         for (volatile uint32_t i = 0; i < 300000; i++);

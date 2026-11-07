@@ -928,13 +928,6 @@ __attribute__((noinline, section(".ramfunc"))) static void SampleBody(void) {
 #else
 static inline __attribute__((always_inline)) void SampleBody(void) {
 #endif
-#ifdef ENABLE_HEARTBEAT
-    static volatile uint32_t mimic_tc_count = 0;
-    if (++mimic_tc_count >= 100000u) {      /* 0.5 sec at 200 kHz */
-        mimic_tc_count = 0;
-        GPIOF->ODR ^= GPIO_PIN_6;
-    }
-#endif
 #ifdef ENABLE_DSP_PROFILING
     uint32_t start_tick = SysTick->VAL;
 #endif
