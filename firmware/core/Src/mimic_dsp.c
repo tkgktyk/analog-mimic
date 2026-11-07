@@ -141,7 +141,6 @@ static MimicPipeline_t pipeline;
 
 #define DELAY_BUFFER_SIZE 4096
 #define DELAY_BUFFER_MASK (DELAY_BUFFER_SIZE - 1)
-static uint16_t delay_buffer_raw_fx3[DELAY_BUFFER_SIZE] = {0};   // 0 - 32760 fits uint16
 
 
 // =========================================================
@@ -243,9 +242,6 @@ typedef struct {
 
 typedef struct {
     uint8_t type;             // Config: MIMIC_LOG_TYPE_*
-    int32_t seg[65];          // LOG: slope * log2(1 + i/64), ANTILOG: unit * 2^(i/64) (raw << 7)
-    int32_t oct[LOG_OCT_COUNT]; // LOG: Vref + slope * (e - log2(unit)) for e = 0 - 14 (raw << 7),
-                                //      x and unit in raw_fx3
     int32_t d_lim;            // ANTILOG: clamp of (x - Vref), raw_fx3
     int32_t inv_k_q20;        // ANTILOG: octaves per raw_fx3 unit (Q20)
 } Log_t;
@@ -266,6 +262,23 @@ typedef union {
 } DSPContext_u;
 
 static DSPContext_u dsp_ctx;
+
+// Tables of the LOG mode (in dsp_work)
+typedef struct {
+    int32_t seg[65];            // LOG: slope * log2(1 + i/64), ANTILOG: unit * 2^(i/64) (raw << 7)
+    int32_t oct[LOG_OCT_COUNT]; // LOG: Vref + slope * (e - log2(unit)) for e = 0 - 14 (raw << 7),
+                                //      x and unit in raw_fx3
+} LogTables_t;
+
+// Work memory: large buffers and tables, used only by the active mode.
+// Unlike dsp_ctx it is not cleared on a mode change; each mode initializes
+// the part it uses (DELAY on entry, LOG on every configuration).
+typedef union {
+    uint16_t    delay_raw_fx3[DELAY_BUFFER_SIZE];   // DELAY: 0 - 32760 fits uint16
+    LogTables_t log;                                // LOG / ANTILOG
+} DSPWork_u;
+
+static DSPWork_u dsp_work;
 
 // =========================================================================
 // Decimation & Interpolation State Variables (Promoted to native 32-bit)
@@ -437,7 +450,8 @@ static inline __attribute__((always_inline)) int32_t ProcessClipper(int32_t x_ra
 // ANTILOG: y = unit * 10^((x - Vref) / slope)     (y: magnitude from 0 V)
 // The tables are in raw << LOG_OUT_FRAC_BITS; the result is rounded to raw_fx3.
 static inline __attribute__((always_inline)) int32_t ProcessLog(int32_t x_raw_fx3) {
-    Log_t *p = &dsp_ctx.log;
+    const Log_t *p = &dsp_ctx.log;
+    const LogTables_t *w = &dsp_work.log;
 
     if (p->type == MIMIC_LOG_TYPE_LOG) {
         uint32_t x = (x_raw_fx3 < 1) ? 1u : (uint32_t)x_raw_fx3;
@@ -452,8 +466,8 @@ static inline __attribute__((always_inline)) int32_t ProcessLog(int32_t x_raw_fx
         uint32_t f    = (x << (LOG_F_BITS - e)) - (1u << LOG_F_BITS);   // mantissa fraction
         uint32_t i    = f >> (LOG_F_BITS - LOG_SEG_BITS);
         int32_t  frac = (int32_t)(f & ((1u << (LOG_F_BITS - LOG_SEG_BITS)) - 1));
-        int32_t  y    = p->oct[e] + p->seg[i]
-                      + (((p->seg[i + 1] - p->seg[i]) * frac) >> (LOG_F_BITS - LOG_SEG_BITS));
+        int32_t  y    = w->oct[e] + w->seg[i]
+                      + (((w->seg[i + 1] - w->seg[i]) * frac) >> (LOG_F_BITS - LOG_SEG_BITS));
         return (y + LOG_TO_FX3_ROUND) >> LOG_TO_FX3_SHIFT;
     }
 
@@ -464,7 +478,7 @@ static inline __attribute__((always_inline)) int32_t ProcessLog(int32_t x_raw_fx
     uint32_t f = (uint32_t)(t - (n << ANTILOG_T_FRAC_BITS));
     uint32_t i = f >> (ANTILOG_T_FRAC_BITS - LOG_SEG_BITS);
     int32_t frac = (int32_t)((f >> (ANTILOG_T_FRAC_BITS - LOG_SEG_BITS - 5)) & 31);
-    int32_t m = p->seg[i] + (((p->seg[i + 1] - p->seg[i]) * frac) >> 5);
+    int32_t m = w->seg[i] + (((w->seg[i + 1] - w->seg[i]) * frac) >> 5);
     if (n >= 0) {
         int32_t lim = ANTILOG_LIM >> n;
         if (m > lim) m = lim;
@@ -541,9 +555,9 @@ static inline __attribute__((always_inline)) int32_t ProcessSampleAndHold(int32_
 static inline __attribute__((always_inline)) int32_t ProcessDelay(int32_t x_raw_fx3) {
     Delay_t *p = &dsp_ctx.delay;
 
-    delay_buffer_raw_fx3[p->delay_write_ptr] = (uint16_t)x_raw_fx3;
+    dsp_work.delay_raw_fx3[p->delay_write_ptr] = (uint16_t)x_raw_fx3;
     uint32_t read_ptr = (p->delay_write_ptr - p->delay_samples) & DELAY_BUFFER_MASK;
-    int32_t out_raw_fx3 = delay_buffer_raw_fx3[read_ptr];
+    int32_t out_raw_fx3 = dsp_work.delay_raw_fx3[read_ptr];
 
     p->delay_write_ptr = (p->delay_write_ptr + 1) & DELAY_BUFFER_MASK;
     return out_raw_fx3;
@@ -611,6 +625,7 @@ static int32_t Log2Q15(uint32_t v) {
 
 static void ConfigureLog(const uint8_t *p) {
     Log_t *c = &dsp_ctx.log;
+    LogTables_t *w = &dsp_work.log;
     int32_t slope = ParseS16(p + 1);     // raw_fx3 per decade
     int32_t unit  = ParseS16(p + 3);     // raw_fx3
     if (slope == 0) slope = 1;
@@ -623,17 +638,17 @@ static void ConfigureLog(const uint8_t *p) {
         // seg[i] = K * log2(1 + i/64), oct[e] = Vref + K * (e - log2(unit)), in raw << 7
         // (x and unit both in raw_fx3, so their ratio needs no scaling)
         for (int i = 0; i <= (1 << LOG_SEG_BITS); i++) {
-            c->seg[i] = (int32_t)(((int64_t)k_q16 * log2_1pf_q15[i]) >> 27);
+            w->seg[i] = (int32_t)(((int64_t)k_q16 * log2_1pf_q15[i]) >> 27);
         }
         int32_t log2_unit_q15 = Log2Q15((uint32_t)unit);
         int32_t vref_q = pipeline.vref_raw_fx3 << LOG_TO_FX3_SHIFT;
         for (int e = 0; e < LOG_OCT_COUNT; e++) {
-            c->oct[e] = vref_q + (int32_t)(((int64_t)k_q16 * ((e << 15) - log2_unit_q15)) >> 27);
+            w->oct[e] = vref_q + (int32_t)(((int64_t)k_q16 * ((e << 15) - log2_unit_q15)) >> 27);
         }
     } else {
         // seg[i] = unit * 2^(i/64) in raw << 7; t = (x - Vref) / K in octaves
         for (int i = 0; i <= (1 << LOG_SEG_BITS); i++) {
-            c->seg[i] = (int32_t)(((int64_t)unit * exp2_f_q15[i]) >> 11);
+            w->seg[i] = (int32_t)(((int64_t)unit * exp2_f_q15[i]) >> 11);
         }
         int32_t k_abs = (k_q16 < 0) ? -k_q16 : k_q16;
         c->d_lim     = (int32_t)(((int64_t)ANTILOG_MAX_OCT * k_abs) >> 16) + 1;
@@ -718,7 +733,7 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
             case MIMIC_MODE_ID_SAMPLE_AND_HOLD:   dsp_ctx.sh.last_raw_fx3        = RAW_MID_FX3; break;
             case MIMIC_MODE_ID_DELAY:
                 for (uint32_t i = 0; i < DELAY_BUFFER_SIZE; i++) {
-                    delay_buffer_raw_fx3[i] = RAW_MID_FX3;
+                    dsp_work.delay_raw_fx3[i] = RAW_MID_FX3;
                 }
                 break;
             default: break;
