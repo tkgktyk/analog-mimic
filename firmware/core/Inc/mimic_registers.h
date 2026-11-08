@@ -53,9 +53,15 @@
 
 #define MIMIC_MATH_DERIVATIVE             0
 #define MIMIC_MATH_INTEGRAL               1
+#define MIMIC_MATH_SQUARE                 2 // (x - Vref)^2 / unit                 (0 V based output)
+#define MIMIC_MATH_SQRT                   3 // sqrt((x - Vref) * unit), 0 below Vref (0 V based output)
+#define MIMIC_MATH_RMS                    4 // sqrt(mean((x - Vref)^2))            (0 V based output)
 
-#define MIMIC_LOG_TYPE_LOG                0 // Vref + slope * log10(x / unit)
-#define MIMIC_LOG_TYPE_ANTILOG            1 // unit * 10^((x - Vref) / slope)
+#define MIMIC_LOG_TYPE_LOG                0 // Vref + slope * log10((x - Vref) / unit)
+#define MIMIC_LOG_TYPE_ANTILOG            1 // unit * 10^((x - Vref) / slope)      (0 V based output)
+
+#define MIMIC_OSC_SINE                    0 // Vref + amplitude * sin(2 pi f0 t)
+#define MIMIC_OSC_VCO                     1 // sine, f = f0 + k * (x - Vref) (linear FM)
 
 #define MIMIC_POLARITY_POSITIVE           0
 #define MIMIC_POLARITY_NEGATIVE           1
@@ -192,8 +198,9 @@
 #define MIMIC_MODE_ID_SLEW_RATE_LIMITER   0x0A // Slew rate limiter
 #define MIMIC_MODE_ID_SAMPLE_AND_HOLD     0x0B // Sample & hold / track & hold
 #define MIMIC_MODE_ID_DELAY               0x0C // Digital delay line
+#define MIMIC_MODE_ID_OSCILLATOR          0x0D // Sine oscillator / VCO (DDS)
 
-#define MIMIC_MODE_MAX_ID                 MIMIC_MODE_ID_DELAY
+#define MIMIC_MODE_MAX_ID                 MIMIC_MODE_ID_OSCILLATOR
 
 
 // =========================================================
@@ -217,11 +224,13 @@
 //   An input of the module (default VDD / 2, limited to 0 V - VDD). Modes with a
 //   signal center work around Vref: y = Vref + H(x - Vref). Changing Vref does not
 //   reset any state (e.g. a slow HPF settles to the new Vref with its time constant).
-//   Every mode with a signal center uses Vref: 1st filter, Biquad, PGA, envelope,
-//   math (derivative / integral), rectifier, and the bipolar side of LOG.
-//   Thresholds (comparator, clipper) and magnitudes (LOG input, ANTILOG output) are
-//   absolute (0 V based). Modes without a center (bypass, slew rate limiter, S&H,
-//   delay) do not use Vref.
+//   Every input is taken relative to Vref (filters, PGA, envelope, rectifier, math,
+//   LOG / ANTILOG, oscillator FM). Outputs with a sign are around Vref; magnitudes
+//   (ANTILOG, SQUARE, SQRT, RMS) are 0 V based: lift them with GLOBAL_OFFSET when the
+//   output must stay clear of 0 V. When modules are chained, set the Vref of the next
+//   module to the offset of the previous one.
+//   Thresholds (comparator, clipper) are absolute (0 V based). Modes without a center
+//   (bypass, slew rate limiter, S&H, delay) do not use Vref.
 //
 // Register formats
 //   0x0B       SYSTEM_ADC_SEQ   uint8   -        Counts ADC_VAL updates (wraps at 256): once per
@@ -260,11 +269,23 @@
 //   ENVELOPE_FOLLOWER  [0-1] 1 - decay mant12, [2] polarity, [3] 1 - decay sh
 //                      (decay per sample; 1 - decay = 0: peak hold)
 //   LOG                [0] type (MIMIC_LOG_TYPE_*), [1-2] slope raw_fx3 per decade
-//                      (signed, negative = inverting), [3-4] unit raw_fx3 (> 0)
+//                      (signed, negative = inverting), [3-4] unit raw_fx3 (> 0).
+//                      LOG input and ANTILOG output are magnitudes from Vref / 0 V:
+//                      LOG gives Vref when x - Vref = unit.
 //   MATH               [0] type (MIMIC_MATH_*)
 //                      derivative: [1-2] scale mant q0_15, [3] scale exp int8 (0 - 15)
 //                      integral:   [1-2] 1 - leak mant12, [3] input shift int8 (<= 1),
 //                                  [4] 1 - leak sh (leak per sample; 1 - leak = 0: no leak)
+//                      square:     [1-2] unit raw_fx3 (> 0)
+//                      sqrt:       [1-2] unit raw_fx3 (> 0). The same unit in a square and
+//                                  a sqrt module gives |x - Vref| back.
+//                      rms:        [1-2] 1 - a mant12, [3] 1 - a sh (13 - 32): averaging
+//                                  m += (1 - a) * ((x - Vref)^2 - m) per sample, gain 1
+//   OSCILLATOR         [0] type (MIMIC_OSC_*), [1-4] phase increment uint32 (< 2^31):
+//                      f0 = inc * fs / 2^32, [5-6] amplitude raw_fx3 (peak, >= 0),
+//                      vco: [7-8] k mant int16, [9] k exp int8 (-16 - 4): the phase
+//                      increment changes by (x - Vref) * mant * 2^exp (0 - fs / 2).
+//                      The phase continues when the payload changes (0 on mode entry).
 //   SLEW_RATE_LIMITER  [0-1] max change per sample raw_fx3 (>= 0)
 //   SAMPLE_AND_HOLD    [0-1] period, [2-3] track (samples, uint16)
 //   DELAY              [0-1] delay (samples, uint16)

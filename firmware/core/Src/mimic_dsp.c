@@ -90,6 +90,17 @@ static volatile uint32_t mimic_output_slot = MIMIC_ADC_MID_VALUE;
 #define SVF_G1_FRAC_BITS    10                                       // g1 = k + g
 #define SVF_K_FRAC_BITS     11                                       // k = 1 / Q
 #define SVF_SHIFT_MAX       30
+// MATH square / sqrt / rms (magnitudes, 0 V based output)
+#define SQRT_SEG_BITS       6                              // 64 segments per unit of x (x = 1 - 4)
+#define SQRT_TABLE_SIZE     (3 * (1 << SQRT_SEG_BITS) + 1) // 193 points
+#define RMS_SH_MIN          13                             // 1 - a < 0.5: tau >= 2 samples
+#define RMS_SH_MAX          32                             // 1 - a >= 2^-21: tau up to about 10 s
+// OSCILLATOR: 32-bit phase, 256-segment sine table with linear interpolation
+#define OSC_SEG_BITS        8
+#define OSC_TABLE_SIZE      ((1 << OSC_SEG_BITS) + 1)      // 257 points
+#define OSC_FRAC_BITS       16                             // interpolation fraction
+#define OSC_INC_MAX         0x7FFFFFFF                     // fs / 2
+#define OSC_FM_LIM          (1 << 30)                      // |FM deviation| <= fs / 4
 
 // =========================================================
 // Base Tables (LOG mode, used at configuration time)
@@ -116,6 +127,60 @@ static const int32_t exp2_f_q15[65] = {
     50535, 51085, 51642, 52204, 52773, 53347, 53928, 54515, 55109, 55709,
     56316, 56929, 57549, 58176, 58809, 59449, 60097, 60751, 61413, 62081,
     62757, 63441, 64132, 64830, 65536
+};
+
+// 2^16 * sqrt(1 + i/64) (i = 0 - 192, x = 1 - 4), copied to dsp_work by MATH SQRT / RMS
+static const int32_t sqrt_1pf_q16[193] = {
+    65536, 66046, 66552, 67054, 67553, 68048, 68539, 69027, 69511, 69992,
+    70470, 70945, 71416, 71885, 72350, 72812, 73271, 73728, 74182, 74633,
+    75081, 75527, 75969, 76410, 76848, 77283, 77716, 78147, 78575, 79001,
+    79424, 79846, 80265, 80682, 81097, 81509, 81920, 82329, 82735, 83140,
+    83542, 83943, 84342, 84739, 85134, 85527, 85918, 86308, 86696, 87082,
+    87467, 87849, 88231, 88610, 88988, 89364, 89739, 90112, 90484, 90854,
+    91222, 91589, 91955, 92319, 92682, 93043, 93403, 93762, 94119, 94475,
+    94829, 95182, 95534, 95885, 96234, 96582, 96929, 97275, 97619, 97962,
+    98304, 98645, 98984, 99323, 99660, 99996, 100331, 100665, 100998, 101329,
+    101660, 101990, 102318, 102645, 102972, 103297, 103622, 103945, 104267, 104588,
+    104909, 105228, 105547, 105864, 106180, 106496, 106811, 107124, 107437, 107749,
+    108060, 108370, 108679, 108987, 109295, 109601, 109907, 110212, 110516, 110819,
+    111122, 111423, 111724, 112024, 112323, 112621, 112919, 113216, 113512, 113807,
+    114101, 114395, 114688, 114980, 115272, 115562, 115852, 116142, 116430, 116718,
+    117005, 117292, 117577, 117862, 118147, 118430, 118713, 118996, 119277, 119558,
+    119839, 120118, 120397, 120676, 120953, 121231, 121507, 121783, 122058, 122333,
+    122607, 122880, 123153, 123425, 123696, 123967, 124238, 124508, 124777, 125045,
+    125314, 125581, 125848, 126114, 126380, 126645, 126910, 127174, 127438, 127701,
+    127963, 128225, 128486, 128747, 129008, 129268, 129527, 129786, 130044, 130302,
+    130559, 130816, 131072
+};
+
+// 32767 * sin(2 pi i / 256) (i = 0 - 256), copied to dsp_work by OSCILLATOR
+static const int32_t sine_q15[257] = {
+    0, 804, 1608, 2410, 3212, 4011, 4808, 5602, 6393, 7179,
+    7962, 8739, 9512, 10278, 11039, 11793, 12539, 13279, 14010, 14732,
+    15446, 16151, 16846, 17530, 18204, 18868, 19519, 20159, 20787, 21403,
+    22005, 22594, 23170, 23731, 24279, 24811, 25329, 25832, 26319, 26790,
+    27245, 27683, 28105, 28510, 28898, 29268, 29621, 29956, 30273, 30571,
+    30852, 31113, 31356, 31580, 31785, 31971, 32137, 32285, 32412, 32521,
+    32609, 32678, 32728, 32757, 32767, 32757, 32728, 32678, 32609, 32521,
+    32412, 32285, 32137, 31971, 31785, 31580, 31356, 31113, 30852, 30571,
+    30273, 29956, 29621, 29268, 28898, 28510, 28105, 27683, 27245, 26790,
+    26319, 25832, 25329, 24811, 24279, 23731, 23170, 22594, 22005, 21403,
+    20787, 20159, 19519, 18868, 18204, 17530, 16846, 16151, 15446, 14732,
+    14010, 13279, 12539, 11793, 11039, 10278, 9512, 8739, 7962, 7179,
+    6393, 5602, 4808, 4011, 3212, 2410, 1608, 804, 0, -804,
+    -1608, -2410, -3212, -4011, -4808, -5602, -6393, -7179, -7962, -8739,
+    -9512, -10278, -11039, -11793, -12539, -13279, -14010, -14732, -15446, -16151,
+    -16846, -17530, -18204, -18868, -19519, -20159, -20787, -21403, -22005, -22594,
+    -23170, -23731, -24279, -24811, -25329, -25832, -26319, -26790, -27245, -27683,
+    -28105, -28510, -28898, -29268, -29621, -29956, -30273, -30571, -30852, -31113,
+    -31356, -31580, -31785, -31971, -32137, -32285, -32412, -32521, -32609, -32678,
+    -32728, -32757, -32767, -32757, -32728, -32678, -32609, -32521, -32412, -32285,
+    -32137, -31971, -31785, -31580, -31356, -31113, -30852, -30571, -30273, -29956,
+    -29621, -29268, -28898, -28510, -28105, -27683, -27245, -26790, -26319, -25832,
+    -25329, -24811, -24279, -23731, -23170, -22594, -22005, -21403, -20787, -20159,
+    -19519, -18868, -18204, -17530, -16846, -16151, -15446, -14732, -14010, -13279,
+    -12539, -11793, -11039, -10278, -9512, -8739, -7962, -7179, -6393, -5602,
+    -4808, -4011, -3212, -2410, -1608, -804, 0
 };
 
 // =========================================================
@@ -200,6 +265,16 @@ typedef struct {
     Coef12_t leak_c;          // Config: integral, 1 - leak (0 = no leak)
     int32_t last_raw_vref_fx3;// State: derivative, previous input
     int32_t state;            // State: integral, raw_vref_fx3 << INTEG_FRAC_BITS
+    uint32_t unit;            // Config: sqrt, unit raw_fx3
+    uint32_t inv_m;           // Config: square, 1 / unit = inv_m / 2^inv_t (inv_m 2^15 - 2^16)
+    uint32_t inv_t;           // Config: square, 15 - 30
+    uint32_t rms_mant;        // Config: rms, 1 - a mant12
+    uint32_t rms_sh;          // Config: rms, 1 - a sh (12 - RMS_SH_MAX)
+    int64_t  rms_state;       // State: rms, mean square (raw_fx3^2) << rms_sh
+    uint32_t rms_m;           // State: rms, floor(mean square) at the even sample
+    uint32_t rms_q;           // State: rms, square of the even sample
+    int32_t  rms_y;           // State: rms, output (updated at the even samples)
+    uint32_t rms_odd;         // State: rms, 0 = even sample, 1 = odd sample
 } Math_t;
 
 typedef struct {
@@ -241,6 +316,17 @@ typedef struct {
 } Delay_t;
 
 typedef struct {
+    uint8_t  type;            // Config: MIMIC_OSC_*
+    uint32_t inc;             // Config: phase increment per sample (f0)
+    int32_t  amp_raw_fx3;     // Config: peak amplitude
+    int32_t  k_mant;          // Config: vco, FM gain mantissa
+    int32_t  k_ls;            // Config: vco, FM gain left shift (0 - 4)
+    int32_t  k_rs;            // Config: vco, FM gain right shift (0 - 16)
+    int32_t  k_lim;           // Config: vco, clamp of (x - Vref) * mant before the left shift
+    uint32_t phase;           // State: 32-bit phase (0 - 2 pi)
+} Osc_t;
+
+typedef struct {
     uint8_t type;             // Config: MIMIC_LOG_TYPE_*
     int32_t d_lim;            // ANTILOG: clamp of (x - Vref), raw_fx3
     int32_t inv_k_q20;        // ANTILOG: octaves per raw_fx3 unit (Q20)
@@ -259,6 +345,7 @@ typedef union {
     SampleHold_t sh;
     Delay_t      delay;
     Log_t        log;
+    Osc_t        osc;
 } DSPContext_u;
 
 static DSPContext_u dsp_ctx;
@@ -272,10 +359,12 @@ typedef struct {
 
 // Work memory: large buffers and tables, used only by the active mode.
 // Unlike dsp_ctx it is not cleared on a mode change; each mode initializes
-// the part it uses (DELAY on entry, LOG on every configuration).
+// the part it uses (DELAY on entry, LOG / MATH / OSCILLATOR on every configuration).
 typedef union {
     uint16_t    delay_raw_fx3[DELAY_BUFFER_SIZE];   // DELAY: 0 - 32760 fits uint16
     LogTables_t log;                                // LOG / ANTILOG
+    int32_t     sqrt_q16[SQRT_TABLE_SIZE];          // MATH SQRT / RMS: copy of sqrt_1pf_q16
+    int32_t     sine_q15[OSC_TABLE_SIZE];           // OSCILLATOR: copy of sine_q15
 } DSPWork_u;
 
 static DSPWork_u dsp_work;
@@ -446,15 +535,16 @@ static inline __attribute__((always_inline)) int32_t ProcessClipper(int32_t x_ra
     return p->center_raw_fx3 + d - ((d * r) >> Q15_FRAC_BITS);
 }
 
-// LOG:     y = Vref + slope * log10(x / unit)      (x: magnitude from 0 V)
-// ANTILOG: y = unit * 10^((x - Vref) / slope)     (y: magnitude from 0 V)
+// LOG:     y = Vref + slope * log10((x - Vref) / unit)   (input: magnitude above Vref)
+// ANTILOG: y = unit * 10^((x - Vref) / slope)           (output: magnitude from 0 V)
 // The tables are in raw << LOG_OUT_FRAC_BITS; the result is rounded to raw_fx3.
 static inline __attribute__((always_inline)) int32_t ProcessLog(int32_t x_raw_fx3) {
     const Log_t *p = &dsp_ctx.log;
     const LogTables_t *w = &dsp_work.log;
 
     if (p->type == MIMIC_LOG_TYPE_LOG) {
-        uint32_t x = (x_raw_fx3 < 1) ? 1u : (uint32_t)x_raw_fx3;
+        int32_t  d = ToVrefFx3(x_raw_fx3);
+        uint32_t x = (d < 1) ? 1u : (uint32_t)d;
 
         // e = floor(log2(x)), x = 1 - 32767 (binary search: Cortex-M0+ has no CLZ)
         uint32_t e = 0;
@@ -489,33 +579,141 @@ static inline __attribute__((always_inline)) int32_t ProcessLog(int32_t x_raw_fx
     return (m + LOG_TO_FX3_ROUND) >> LOG_TO_FX3_SHIFT;
 }
 
+// sqrt(v) for v < 2^30, rounded, in the units of v^(1/2) (raw_fx3 for raw_fx3^2).
+// v = w / 4^k with w in [2^28, 2^30): t[i] = 2^16 sqrt(1 + i/64) = 4 sqrt(w at i), linear
+// interpolation (error < 0.15 raw_fx3), then >> (k + 2). About 35 cycles, data independent
+// apart from the binary search.
+static inline __attribute__((always_inline)) uint32_t SqrtLut(uint32_t v) {
+    const int32_t *t = dsp_work.sqrt_q16;
+    if (v == 0) return 0;
+
+    uint32_t e = 0;                               // floor(log2(v)) (no CLZ on Cortex-M0+)
+    if (v >> 16)       e = 16;
+    if (v >> (e + 8))  e += 8;
+    if (v >> (e + 4))  e += 4;
+    if (v >> (e + 2))  e += 2;
+    if (v >> (e + 1))  e += 1;
+
+    uint32_t e2   = (29u - e) & ~1u;              // even shift: w in [2^28, 2^30)
+    uint32_t f    = (v << e2) - (1u << 28);       // 0 - 3 * 2^28
+    uint32_t i    = f >> 22;                      // 0 - 191 (64 per unit)
+    int32_t  frac = (int32_t)((f >> 12) & 1023);
+    int32_t  s    = t[i] + (((t[i + 1] - t[i]) * frac) >> 10);
+    uint32_t sh   = (e2 >> 1) + 2;
+    return ((uint32_t)s + (1u << (sh - 1))) >> sh;
+}
+
 // Math: derivative y = Vref + k * dx/dt, or leaky integrator leaking toward Vref
-static inline __attribute__((always_inline)) int32_t ProcessMath(int32_t x_raw_fx3) {
-    Math_t *p = &dsp_ctx.math;
+static inline __attribute__((always_inline)) int32_t MathDerivative(Math_t *p, int32_t d) {
+    // y = Vref + scale * (x[n] - x[n-1]), rounded once.
+    // |diff| <= 65534 and |mant| <= 32768: |diff * mant| + half < 2^31.
+    int32_t diff = d - p->last_raw_vref_fx3;
+    p->last_raw_vref_fx3 = d;
 
-    int32_t in_raw_vref_fx3 = ToVrefFx3(x_raw_fx3);
-    int32_t s = p->shift;
+    int32_t out_raw_vref_fx3 = (diff * p->scale_mant_q0_15 + p->half) >> p->shift;
+    return FromVrefFx3(ClampI32(out_raw_vref_fx3, OUT_GUARD_RAW_FX3));
+}
 
-    if (p->type == MIMIC_MATH_DERIVATIVE) {
-        // y = Vref + scale * (x[n] - x[n-1]), rounded once.
-        // |diff| <= 65534 and |mant| <= 32768: |diff * mant| + half < 2^31.
-        int32_t diff = in_raw_vref_fx3 - p->last_raw_vref_fx3;
-        p->last_raw_vref_fx3 = in_raw_vref_fx3;
-
-        int32_t out_raw_vref_fx3 = (diff * p->scale_mant_q0_15 + p->half) >> p->shift;
-        return FromVrefFx3(ClampI32(out_raw_vref_fx3, OUT_GUARD_RAW_FX3));
-    }
-
+static inline __attribute__((always_inline)) int32_t MathIntegral(Math_t *p, int32_t d) {
     // Leaky integrator: y = leak * y + 2^exp * d, as y += 2^exp * d - (1 - leak) * y.
     // The state keeps INTEG_FRAC_BITS below raw_fx3: |state| < 2^30, |d << s| < 2^30,
     // |y| < 2^16 and mant < 2^12 with ls <= 2: the leak term < 2^30.
-    int32_t in_term = (s >= 0) ? (in_raw_vref_fx3 << s) : (in_raw_vref_fx3 >> -s);
+    int32_t s = p->shift;
+    int32_t in_term = (s >= 0) ? (d << s) : (d >> -s);
     int32_t y = (p->state + (1 << (INTEG_FRAC_BITS - 1))) >> INTEG_FRAC_BITS;
     int32_t state = p->state + in_term
                   - ((((y * p->leak_c.mant) << p->leak_c.ls) + p->leak_c.half) >> p->leak_c.rs);
     state = ClampI32(state, INTEG_STATE_LIM);
     p->state = state;
     return FromVrefFx3((state + (1 << (INTEG_FRAC_BITS - 1))) >> INTEG_FRAC_BITS);
+}
+
+// Square: y = d^2 / unit = round(d^2 * inv_m / 2^inv_t), exact rounding within uint32.
+// d^2 < 2^30 is split at bit 15 so that both products stay below 2^31.
+static inline __attribute__((always_inline)) int32_t MathSquare(Math_t *p, int32_t d) {
+    uint32_t q  = (uint32_t)(d * d);
+    uint32_t t  = p->inv_t;
+    uint32_t hm = (q >> 15) * p->inv_m;                       // < 2^31
+    uint32_t lo = ((hm & ((1u << (t - 15)) - 1)) << 15)       // < 2^30 (t <= 30)
+                + (q & 0x7FFFu) * p->inv_m                    // < 2^31
+                + (1u << (t - 1));                            // <= 2^29
+    uint32_t y  = (hm >> (t - 15)) + (lo >> t);
+    return (y > OUT_GUARD_RAW_FX3) ? OUT_GUARD_RAW_FX3 : (int32_t)y;
+}
+
+// Square root: y = sqrt((x - Vref) * unit), 0 below Vref. d * unit < 2^30.
+static inline __attribute__((always_inline)) int32_t MathSqrt(Math_t *p, int32_t d) {
+    if (d <= 0) return 0;
+    return (int32_t)SqrtLut((uint32_t)d * p->unit);
+}
+
+// RMS: m += (1 - a) * (d^2 - m), y = sqrt(m). The mean square is kept in 64 bits with
+// rms_sh fractional bits (m << sh < 2^62), so that the update is exact: no dead band even
+// with a time constant of seconds. The work is split over two samples to keep the peak
+// cycle count below the Biquad: the even sample takes the square and the square root, the
+// odd sample updates m with both squares, m += (1 - a) * (q0 + q1 - 2 m) (the same time
+// constant). The output is refreshed every second sample.
+static inline __attribute__((always_inline)) int32_t MathRms(Math_t *p, int32_t d) {
+    uint32_t q = (uint32_t)(d * d);                                   // < 2^30
+
+    if (p->rms_odd == 0) {
+        uint32_t sh = p->rms_sh;
+        uint64_t st = (uint64_t)p->rms_state;
+        uint32_t hi = (uint32_t)(st >> 32);
+        uint32_t lo = (uint32_t)st;
+        uint32_t m  = (sh >= 32) ? hi : ((hi << (32 - sh)) | (lo >> sh));   // floor(m), < 2^30
+        p->rms_m   = m;
+        p->rms_q   = q;
+        p->rms_y   = (int32_t)SqrtLut(m);
+        p->rms_odd = 1;
+    } else {
+        // |q0 + q1 - 2 m| < 2^31; the 31 x 12-bit product is split into two 32-bit
+        // products (no 64-bit multiply call in the ISR)
+        int32_t  e  = (int32_t)(p->rms_q + q - (p->rms_m << 1));
+        uint32_t ae = (e < 0) ? (uint32_t)-e : (uint32_t)e;
+        uint64_t dq = ((uint64_t)((ae >> 16) * p->rms_mant) << 16) + (ae & 0xFFFFu) * p->rms_mant;
+        p->rms_state += (e < 0) ? -(int64_t)dq : (int64_t)dq;
+        p->rms_odd = 0;
+    }
+    return p->rms_y;
+}
+
+static inline __attribute__((always_inline)) int32_t ProcessMath(int32_t x_raw_fx3) {
+    Math_t *p = &dsp_ctx.math;
+    int32_t d = ToVrefFx3(x_raw_fx3);
+
+    switch (p->type) {
+        case MIMIC_MATH_DERIVATIVE: return MathDerivative(p, d);
+        case MIMIC_MATH_INTEGRAL:   return MathIntegral(p, d);
+        case MIMIC_MATH_SQUARE:     return MathSquare(p, d);
+        case MIMIC_MATH_SQRT:       return MathSqrt(p, d);
+        default:                    return MathRms(p, d);
+    }
+}
+
+// Oscillator (DDS): y = Vref + amplitude * sin(phase), phase += inc (+ FM for the VCO).
+// 256-segment table with linear interpolation (error < 1e-4 of the amplitude).
+static inline __attribute__((always_inline)) int32_t ProcessOscillator(int32_t x_raw_fx3) {
+    Osc_t *p = &dsp_ctx.osc;
+    const int32_t *t = dsp_work.sine_q15;
+
+    uint32_t ph   = p->phase;
+    uint32_t i    = ph >> (32 - OSC_SEG_BITS);
+    int32_t  frac = (int32_t)((ph >> (32 - OSC_SEG_BITS - OSC_FRAC_BITS)) & ((1 << OSC_FRAC_BITS) - 1));
+    int32_t  sn   = t[i] + (((t[i + 1] - t[i]) * frac) >> OSC_FRAC_BITS);   // q15, |diff| < 805
+    int32_t  y    = (sn * p->amp_raw_fx3 + (1 << (Q15_FRAC_BITS - 1))) >> Q15_FRAC_BITS;
+
+    int32_t inc = (int32_t)p->inc;
+    if (p->type == MIMIC_OSC_VCO) {
+        // f = f0 + k (x - Vref), limited to 0 - fs / 2
+        int32_t fm = ClampI32(ToVrefFx3(x_raw_fx3) * p->k_mant, p->k_lim);   // |d * mant| < 2^30
+        fm = (fm << p->k_ls) >> p->k_rs;                                     // |fm| <= 2^30
+        inc = (fm > 0 && inc > OSC_INC_MAX - fm) ? OSC_INC_MAX : inc + fm;
+        if (inc < 0) inc = 0;
+    }
+    p->phase = ph + (uint32_t)inc;
+
+    return FromVrefFx3(y);
 }
 
 // Slew-rate limiter: the output moves toward x by at most max_step per sample
@@ -705,6 +903,82 @@ static void MantExpToShift(int32_t exp, int32_t *shift, int32_t *half) {
     *half  = (1 << *shift) >> 1;
 }
 
+static void ConfigureMath(const uint8_t *p) {
+    Math_t *c = &dsp_ctx.math;
+    int32_t exp = (int8_t)p[3];
+    c->type = (p[0] <= MIMIC_MATH_RMS) ? p[0] : MIMIC_MATH_DERIVATIVE;
+
+    switch (c->type) {
+        case MIMIC_MATH_DERIVATIVE:
+            c->scale_mant_q0_15 = ParseS16(p + 1);
+            MantExpToShift(exp, &c->shift, &c->half);
+            break;
+
+        case MIMIC_MATH_INTEGRAL:
+            // Input shift exp <= 1, applied to the state with INTEG_FRAC_BITS
+            if (exp > 1) exp = 1;
+            if (exp < -(INTEG_FRAC_BITS + 16)) exp = -(INTEG_FRAC_BITS + 16);
+            c->shift = INTEG_FRAC_BITS + exp;
+            c->half  = 0;
+            SetCoef12(&c->leak_c, ParseU16(p + 1), p[4], INTEG_FRAC_BITS);
+            break;
+
+        case MIMIC_MATH_SQUARE: {
+            // 1 / unit = inv_m / 2^inv_t with inv_m in [2^15, 2^16): inv_t = 15 - 30
+            int32_t unit = ParseS16(p + 1);
+            if (unit < 1) unit = 1;
+            uint32_t t = 15;
+            while (((1u << t) / (uint32_t)unit) < 32768u) t++;
+            c->inv_t = t;
+            c->inv_m = (uint32_t)((((uint64_t)1 << t) + ((uint32_t)unit >> 1)) / (uint32_t)unit);
+            break;
+        }
+
+        case MIMIC_MATH_SQRT: {
+            int32_t unit = ParseS16(p + 1);
+            if (unit < 1) unit = 1;
+            c->unit = (uint32_t)unit;
+            memcpy(dsp_work.sqrt_q16, sqrt_1pf_q16, sizeof(sqrt_1pf_q16));
+            break;
+        }
+
+        default: {   // MIMIC_MATH_RMS: the mean square is kept when only the time constant changes
+            uint32_t mant = ParseU16(p + 1);
+            uint32_t sh   = p[3];
+            if (mant > 4095) mant = 4095;
+            if (sh < RMS_SH_MIN) sh = RMS_SH_MIN;   // 1 - a < 0.5: stable with the 2-sample update
+            if (sh > RMS_SH_MAX) sh = RMS_SH_MAX;
+            if (c->rms_state < 0) c->rms_state = 0;
+            if (sh != c->rms_sh) {   // rescale the state to the new fractional bits
+                c->rms_state = (sh > c->rms_sh) ? (c->rms_state << (sh - c->rms_sh))
+                                                : (c->rms_state >> (c->rms_sh - sh));
+            }
+            c->rms_mant = mant;
+            c->rms_sh   = sh;
+            memcpy(dsp_work.sqrt_q16, sqrt_1pf_q16, sizeof(sqrt_1pf_q16));
+            break;
+        }
+    }
+}
+
+static void ConfigureOscillator(const uint8_t *p) {
+    Osc_t *c = &dsp_ctx.osc;
+    uint32_t inc = ((uint32_t)ParseU16(p + 1) << 16) | ParseU16(p + 3);
+    int32_t  amp = ParseS16(p + 5);
+    int32_t  exp = (int8_t)p[9];
+
+    c->type        = (p[0] == MIMIC_OSC_VCO) ? MIMIC_OSC_VCO : MIMIC_OSC_SINE;
+    c->inc         = (inc > OSC_INC_MAX) ? OSC_INC_MAX : inc;
+    c->amp_raw_fx3 = (amp < 0) ? 0 : amp;
+    c->k_mant      = ParseS16(p + 7);
+    if (exp > 4)   exp = 4;
+    if (exp < -16) exp = -16;
+    c->k_ls  = (exp > 0) ? exp : 0;
+    c->k_rs  = (exp < 0) ? -exp : 0;
+    c->k_lim = OSC_FM_LIM >> c->k_ls;
+    memcpy(dsp_work.sine_q15, sine_q15, sizeof(sine_q15));
+}
+
 void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
     uint8_t previous_mode = pipeline.current_mode;
 
@@ -785,22 +1059,13 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
             dsp_ctx.comp.lower_raw_fx3 = ParseS16(p + 3);
             break;
 
-        case MIMIC_MODE_ID_MATH: {
-            int32_t exp = (int8_t)*(p + 3);
-            dsp_ctx.math.type = *(p + 0);
-            dsp_ctx.math.scale_mant_q0_15 = ParseS16(p + 1);
-            if (dsp_ctx.math.type == MIMIC_MATH_INTEGRAL) {
-                // Input shift exp <= 1, applied to the state with INTEG_FRAC_BITS
-                if (exp > 1) exp = 1;
-                if (exp < -(INTEG_FRAC_BITS + 16)) exp = -(INTEG_FRAC_BITS + 16);
-                dsp_ctx.math.shift        = INTEG_FRAC_BITS + exp;
-                dsp_ctx.math.half         = 0;
-                SetCoef12(&dsp_ctx.math.leak_c, ParseU16(p + 1), p[4], INTEG_FRAC_BITS);
-            } else {
-                MantExpToShift(exp, &dsp_ctx.math.shift, &dsp_ctx.math.half);
-            }
+        case MIMIC_MODE_ID_MATH:
+            ConfigureMath(p);
             break;
-        }
+
+        case MIMIC_MODE_ID_OSCILLATOR:
+            ConfigureOscillator(p);
+            break;
 
         case MIMIC_MODE_ID_SLEW_RATE_LIMITER: {
             int32_t step = ParseS16(p + 0);
@@ -845,7 +1110,9 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
 // 3. The Main DSP Pipeline 
 // =========================================================
 // x_raw_fx3: DSP input in raw_fx3 (0 - 32760). Returns the DAC code (0 - 4095).
-__attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample(int32_t x_raw_fx3) {
+// One copy in RAM, called from SampleBody() (with and without decimation) after the
+// output has been written: inlining it twice would place every mode twice in RAM.
+__attribute__((noinline, section(".ramfunc"))) static uint16_t MimicDSP_ProcessSample(int32_t x_raw_fx3) {
     MimicPipeline_t *pipe = &pipeline;
     int32_t dsp_out = 0;
 
@@ -864,6 +1131,7 @@ __attribute__((always_inline)) static inline uint16_t MimicDSP_ProcessSample(int
             case MIMIC_MODE_ID_SLEW_RATE_LIMITER:   dsp_out = ProcessSlewRateLimiter(x_raw_fx3); break;
             case MIMIC_MODE_ID_SAMPLE_AND_HOLD:     dsp_out = ProcessSampleAndHold(x_raw_fx3); break;
             case MIMIC_MODE_ID_DELAY:               dsp_out = ProcessDelay(x_raw_fx3); break;
+            case MIMIC_MODE_ID_OSCILLATOR:          dsp_out = ProcessOscillator(x_raw_fx3); break;
             default:                                dsp_out = x_raw_fx3; break;
         }
     }

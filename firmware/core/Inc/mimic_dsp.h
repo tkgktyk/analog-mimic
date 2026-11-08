@@ -35,7 +35,7 @@ extern "C" {
 // Configuration Structures & Macros
 // =========================================================
 
-#define MIMIC_DSP_PAYLOAD_SIZE (MIMIC_REG_MODE_PAYLOAD_END - MIMIC_REG_MODE_PAYLOAD_START)
+#define MIMIC_DSP_PAYLOAD_SIZE (MIMIC_REG_MODE_PAYLOAD_END - MIMIC_REG_MODE_PAYLOAD_START + 1)   // 0x21 - 0x2F: 15 bytes
 
 /**
  * @brief Encapsulates the complete configuration state required by the DSP core.
