@@ -6,11 +6,12 @@ The conventions (`raw_fx3`, Vref, output stage, payload offsets from `MODE_PAYLO
 
 | ID | Mode | Payload |
 | --- | --- | --- |
+| 0x05 | `CLIPPER` (type 2) | [0] type 2: dead zone, [1-2] upper `raw_fx3`, [3-4] lower `raw_fx3` (the clipper itself, types 0 and 1, is released) |
 | 0x08 | `LOG` | [0] type (0: log, 1: antilog), [1-2] slope `raw_fx3` per decade (signed), [3-4] unit `raw_fx3` (> 0) |
 | 0x0A | `SLEW_RATE_LIMITER` | [0-1] maximum change per sample `raw_fx3` (≥ 0) |
 | 0x0B | `SAMPLE_AND_HOLD` | [0-1] period, [2-3] track time (samples, uint16) |
 | 0x0C | `DELAY` | [0-1] delay (samples, uint16, up to 4095) |
-| 0x0D | `OSCILLATOR` | [0] type (0: sine, 1: VCO), [1-4] phase increment uint32, [5-6] amplitude `raw_fx3`, [7-8] VCO gain mant int16, [9] VCO gain exp int8 (−16 - 4) |
+| 0x0D | `OSCILLATOR` | [0] type (0: fixed frequency, 1: VCO), [1] waveform (0: sine, 1: triangle, 2: square, 3: sawtooth), [2-5] phase increment uint32, [6-7] amplitude `raw_fx3`, [8-9] VCO gain mant int16, [10] VCO gain exp int8 (−16 - 4) |
 | 0x0E | `MULTIPLIER` | [0] type (0: squarer, 1: square rooter), [1-2] unit `raw_fx3` (> 0) |
 | 0x0F | `TRUE_RMS` | [0-1] 1 − a mant12, [2] 1 − a shift (13 - 32) |
 
@@ -18,11 +19,19 @@ The conventions (`raw_fx3`, Vref, output stage, payload offsets from `MODE_PAYLO
 
 * **Input and output around Vref:** LOG, oscillator (the FM input of the VCO; the output swings around Vref).
 * **Input around Vref, output a magnitude from 0 V:** ANTILOG, squarer, square rooter, true RMS.
+* **Absolute limits, output around Vref:** dead zone (clipper type 2).
 * **No signal center:** slew rate limiter, sample & hold, delay.
 
 Outputs that are magnitudes from 0 V lose their lowest part to the supply headroom (about 0.1 V); lift them with `GLOBAL_OFFSET` when needed. For a module after one of them, set its Vref to that offset, so that the offset cancels.
 
 ## Modes
+
+### 0x05 Clipper, type 2: dead zone
+A diode dead-band circuit: the output is Vref while the input is between the limits (absolute voltages, like the clipper), and Vref plus the distance beyond the limit outside, so the transfer curve has slope 1 outside and no step:
+
+$$y = \begin{cases} V_{ref} + (x - \text{upper}) & x > \text{upper} \\ V_{ref} & \text{lower} \le x \le \text{upper} \\ V_{ref} + (x - \text{lower}) & x < \text{lower} \end{cases}$$
+
+Small signals and noise around the center are removed (for example the backlash of a control loop or the noise of a sensor at rest); larger signals pass, moved toward Vref by the limit. An upper limit below the lower one is taken as equal to the lower one.
 
 ### 0x08 LOG
 Logarithmic amplifier: $y = V_{ref} + \text{slope} \cdot \log_{10}((x - V_{ref}) / \text{unit})$: the input is a magnitude above Vref, and the output is Vref when $x - V_{ref}$ = unit. Set Vref to 0 V for a sensor whose zero is 0 V (a photodiode, for example); keep Vref equal to that of a preceding envelope follower or rectifier to get its magnitude in decades. Antilogarithmic: $y = \text{unit} \cdot 10^{(x - V_{ref}) / \text{slope}}$, a magnitude from 0 V. Implemented with per-mode tables (64 segments per octave) built when the mode is configured, and linear interpolation.
@@ -39,11 +48,23 @@ Tracks the input for the first *track* samples of every *period* samples and hol
 Delays the input by the given number of samples (ring buffer of 4096 samples), like a 4096-stage bucket-brigade delay line.
 
 ### 0x0D Oscillator
-A sine oscillator made by direct digital synthesis (DDS): a 32-bit phase accumulator and a 256-segment sine table with linear interpolation (error below 1e-4 of the amplitude).
+An oscillator (function generator) made by direct digital synthesis (DDS): a 32-bit phase accumulator, and a waveform computed from the phase.
 
-$$y = V_{ref} + A \sin\varphi, \qquad \varphi \leftarrow \varphi + \text{inc}, \qquad f_0 = \text{inc} \cdot f_s / 2^{32}$$
+$$y = V_{ref} + A\,w(\varphi), \qquad \varphi \leftarrow \varphi + \text{inc}, \qquad f_0 = \text{inc} \cdot f_s / 2^{32}$$
 
-* **Sine:** fixed frequency $f_0$ (0 - $f_s/2$; resolution 0.05 mHz at 200 kHz). With $f_0 = 0$ the output stays at Vref, which makes the module a constant voltage source (set by Vref).
+Every waveform is 0 at phase 0 and rises, so the output starts at Vref when the mode is selected:
+
+| [1] | Waveform $w(\varphi)$ |
+| --- | --- |
+| 0 | Sine: a 256-segment table with linear interpolation (error below 1e-4 of the amplitude) |
+| 1 | Triangle: +1 at a quarter period, −1 at three quarters |
+| 2 | Square: +1 in the first half period, −1 in the second |
+| 3 | Sawtooth: rises from −1 to +1 over the period (the step is at half the period) |
+
+Other values give the sine. The square and the sawtooth change within one sample, so their harmonics above $f_s/2$ fold back (alias); like the sine, they are best kept well below 20 kHz. 
+
+Type [0]:
+* **Fixed frequency** (type 0, `MIMIC_OSC_FIXED`): $f_0$ (0 - $f_s/2$; resolution 0.05 mHz at 200 kHz). With $f_0 = 0$ the output stays at Vref, which makes the module a constant voltage source (set by Vref).
 * **VCO:** the frequency follows the input, $f = f_0 + k (x - V_{ref})$ (linear FM, limited to 0 - $f_s/2$), with $k$ = mant × 2^exp as a phase increment per `raw_fx3`. For an exponential (1 V/oct) control, put an ANTILOG module in front.
 
 The phase continues when the payload changes (like changing the frequency or the amplitude of an analog oscillator) and starts at 0 when the mode is selected. The output is analog only. Sine waves above about 20 kHz have few samples per cycle and depend on the anti-imaging filter. With decimation the frequency is divided by 2^N, like every other time constant.

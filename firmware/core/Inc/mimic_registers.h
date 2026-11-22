@@ -40,6 +40,8 @@
 #define MIMIC_CLIPPER_HARD                0 // Passes the input between the limits, clips outside
 #define MIMIC_CLIPPER_SOFT                1 // Cubic soft clip: gain 1 at the center, reaches a limit
                                             // at 1.5 x the center-to-limit distance
+#define MIMIC_CLIPPER_DEAD_ZONE           2 // (experimental) Vref between the limits, Vref + (x - limit)
+                                            // beyond a limit (slope 1, continuous)
 
 #define MIMIC_COMPARATOR_WINDOW           0
 #define MIMIC_COMPARATOR_SCHMITT          1
@@ -61,8 +63,14 @@
 #define MIMIC_LOG_TYPE_LOG                0 // Vref + slope * log10((x - Vref) / unit)
 #define MIMIC_LOG_TYPE_ANTILOG            1 // unit * 10^((x - Vref) / slope)      (0 V based output)
 
-#define MIMIC_OSC_SINE                    0 // Vref + amplitude * sin(2 pi f0 t)
-#define MIMIC_OSC_VCO                     1 // sine, f = f0 + k * (x - Vref) (linear FM)
+#define MIMIC_OSC_FIXED                   0 // fixed frequency f0: Vref + amplitude * wave(2 pi f0 t)
+#define MIMIC_OSC_VCO                     1 // f = f0 + k * (x - Vref) (linear FM)
+
+// Waveforms of the oscillator (payload [1]; 0 at phase 0, rising; other values: sine)
+#define MIMIC_OSC_WAVE_SINE               0
+#define MIMIC_OSC_WAVE_TRIANGLE           1
+#define MIMIC_OSC_WAVE_SQUARE             2 // +amplitude in the first half of the period
+#define MIMIC_OSC_WAVE_SAWTOOTH           3 // rises from -amplitude to +amplitude
 
 #define MIMIC_POLARITY_POSITIVE           0
 #define MIMIC_POLARITY_NEGATIVE           1
@@ -272,8 +280,9 @@
 //                      Limits (library): fs / 100000 <= fc < fs / 4, 0.1 <= Q <= 10
 //   COMPARATOR         [0] type (MIMIC_COMPARATOR_*), [1-2] upper raw_fx3, [3-4] lower raw_fx3
 //   CLIPPER            [0] type (MIMIC_CLIPPER_*), [1-2] upper raw_fx3, [3-4] lower raw_fx3
+//                      (dead zone, experimental: upper < lower is taken as upper = lower)
 //   RECTIFIER          [0] type (MIMIC_RECT_*), [1] polarity (MIMIC_POLARITY_*)
-//   ENVELOPE_FOLLOWER  [0-1] 1 - decay mant12, [2] polarity, [3] 1 - decay sh
+//   ENVELOPE_FOLLOWER  [0] polarity (MIMIC_POLARITY_*), [1-2] 1 - decay mant12, [3] 1 - decay sh
 //                      (decay per sample; 1 - decay = 0: peak hold)
 //   LOG                (experimental) [0] type (MIMIC_LOG_TYPE_*), [1-2] slope raw_fx3 per decade
 //                      (signed, negative = inverting), [3-4] unit raw_fx3 (> 0).
@@ -290,9 +299,10 @@
 //                      in a squarer and a square-rooter module gives |x - Vref| back.
 //   TRUE_RMS           (experimental) [0-1] 1 - a mant12, [2] 1 - a sh (13 - 32): averaging
 //                      m += (1 - a) * ((x - Vref)^2 - m) per sample, y = sqrt(m), gain 1
-//   OSCILLATOR         (experimental) [0] type (MIMIC_OSC_*), [1-4] phase increment uint32 (< 2^31):
-//                      f0 = inc * fs / 2^32, [5-6] amplitude raw_fx3 (peak, >= 0),
-//                      vco: [7-8] k mant int16, [9] k exp int8 (-16 - 4): the phase
+//   OSCILLATOR         (experimental) [0] type (MIMIC_OSC_*), [1] waveform (MIMIC_OSC_WAVE_*;
+//                      other values: sine), [2-5] phase increment uint32 (< 2^31):
+//                      f0 = inc * fs / 2^32, [6-7] amplitude raw_fx3 (peak, >= 0),
+//                      vco: [8-9] k mant int16, [10] k exp int8 (-16 - 4): the phase
 //                      increment changes by (x - Vref) * mant * 2^exp (0 - fs / 2).
 //                      The phase continues when the payload changes (0 on mode entry).
 //   SLEW_RATE_LIMITER  (experimental) [0-1] max change per sample raw_fx3 (>= 0)

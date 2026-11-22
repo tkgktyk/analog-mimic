@@ -329,6 +329,7 @@ typedef struct {
 
 typedef struct {
     uint8_t  type;            // Config: MIMIC_OSC_*
+    uint8_t  wave;            // Config: MIMIC_OSC_WAVE_*
     uint32_t inc;             // Config: phase increment per sample (f0)
     int32_t  amp_raw_fx3;     // Config: peak amplitude
     int32_t  k_mant;          // Config: vco, FM gain mantissa
@@ -539,6 +540,12 @@ static inline __attribute__((always_inline)) int32_t ProcessClipper(int32_t x_ra
         if (x_raw_fx3 < p->lower_raw_fx3) return p->lower_raw_fx3;
         return x_raw_fx3;
     }
+    if (p->type == MIMIC_CLIPPER_DEAD_ZONE) {
+        // Vref between the limits, and the distance beyond a limit outside (slope 1, continuous)
+        if (x_raw_fx3 > p->upper_raw_fx3) return FromVrefFx3(x_raw_fx3 - p->upper_raw_fx3);
+        if (x_raw_fx3 < p->lower_raw_fx3) return FromVrefFx3(x_raw_fx3 - p->lower_raw_fx3);
+        return pipeline.vref_raw_fx3;
+    }
 
     int32_t d = x_raw_fx3 - p->center_raw_fx3;
     if (d >=  p->lim_raw_fx3) return p->upper_raw_fx3;
@@ -723,11 +730,21 @@ static inline __attribute__((always_inline)) int32_t ProcessOscillator(int32_t x
     Osc_t *p = &dsp_ctx.osc;
     const int32_t *t = dsp_work.sine_q15;
 
-    uint32_t ph   = p->phase;
-    uint32_t i    = ph >> (32 - OSC_SEG_BITS);
-    int32_t  frac = (int32_t)((ph >> (32 - OSC_SEG_BITS - OSC_FRAC_BITS)) & ((1 << OSC_FRAC_BITS) - 1));
-    int32_t  sn   = t[i] + (((t[i + 1] - t[i]) * frac) >> OSC_FRAC_BITS);   // q15, |diff| < 805
-    int32_t  y    = (sn * p->amp_raw_fx3 + (1 << (Q15_FRAC_BITS - 1))) >> Q15_FRAC_BITS;
+    uint32_t ph = p->phase;
+    int32_t  w;                                   // waveform, q15 (-1 - 1), 0 at phase 0
+    if (p->wave == MIMIC_OSC_WAVE_SINE) {
+        uint32_t i    = ph >> (32 - OSC_SEG_BITS);
+        int32_t  frac = (int32_t)((ph >> (32 - OSC_SEG_BITS - OSC_FRAC_BITS)) & ((1 << OSC_FRAC_BITS) - 1));
+        w = t[i] + (((t[i + 1] - t[i]) * frac) >> OSC_FRAC_BITS);   // |diff| < 805
+    } else if (p->wave == MIMIC_OSC_WAVE_TRIANGLE) {
+        int32_t v = (int32_t)(ph + 0x40000000u);   // a quarter period ahead: |v| falls, rises
+        w = ((v ^ (v >> 31)) >> 15) - 32768;       // 0 at phase 0, +1 at 1/4, -1 at 3/4
+    } else if (p->wave == MIMIC_OSC_WAVE_SQUARE) {
+        w = ((int32_t)ph >= 0) ? 32767 : -32767;   // high in the first half, like the sine
+    } else {
+        w = (int32_t)ph >> 16;                     // sawtooth: rises from -1 to 1, 0 at phase 0
+    }
+    int32_t y = (w * p->amp_raw_fx3 + (1 << (Q15_FRAC_BITS - 1))) >> Q15_FRAC_BITS;
 
     int32_t inc = (int32_t)p->inc;
     if (p->type == MIMIC_OSC_VCO) {
@@ -899,6 +916,7 @@ static void ConfigureClipper(const uint8_t *p) {
     c->type          = p[0];
     c->upper_raw_fx3 = upper;
     c->lower_raw_fx3 = lower;
+    if (c->type == MIMIC_CLIPPER_DEAD_ZONE && upper < lower) c->upper_raw_fx3 = lower;
     if (c->type != MIMIC_CLIPPER_SOFT) return;
 
     // Limits within 0 V - VDD: h <= 16383, so |d| < 1.5 h keeps d^2 < 2^30
@@ -1012,14 +1030,15 @@ static void ConfigureTrueRms(const uint8_t *p) {
 
 static void ConfigureOscillator(const uint8_t *p) {
     Osc_t *c = &dsp_ctx.osc;
-    uint32_t inc = ((uint32_t)ParseU16(p + 1) << 16) | ParseU16(p + 3);
-    int32_t  amp = ParseS16(p + 5);
-    int32_t  exp = (int8_t)p[9];
+    uint32_t inc = ((uint32_t)ParseU16(p + 2) << 16) | ParseU16(p + 4);
+    int32_t  amp = ParseS16(p + 6);
+    int32_t  exp = (int8_t)p[10];
 
-    c->type        = (p[0] == MIMIC_OSC_VCO) ? MIMIC_OSC_VCO : MIMIC_OSC_SINE;
+    c->type        = (p[0] == MIMIC_OSC_VCO) ? MIMIC_OSC_VCO : MIMIC_OSC_FIXED;
+    c->wave        = (p[1] <= MIMIC_OSC_WAVE_SAWTOOTH) ? p[1] : MIMIC_OSC_WAVE_SINE;
     c->inc         = (inc > OSC_INC_MAX) ? OSC_INC_MAX : inc;
     c->amp_raw_fx3 = (amp < 0) ? 0 : amp;
-    c->k_mant      = ParseS16(p + 7);
+    c->k_mant      = ParseS16(p + 8);
     if (exp > 4)   exp = 4;
     if (exp < -16) exp = -16;
     c->k_ls  = (exp > 0) ? exp : 0;
@@ -1140,8 +1159,8 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
             break;
 
         case MIMIC_MODE_ID_ENVELOPE_FOLLOWER:
-            SetCoef12(&dsp_ctx.envelope.decay_c, ParseU16(p + 0), p[3], ENV_FRAC_BITS);
-            dsp_ctx.envelope.polarity    = (uint8_t)*(p + 2);
+            dsp_ctx.envelope.polarity    = (uint8_t)*(p + 0);
+            SetCoef12(&dsp_ctx.envelope.decay_c, ParseU16(p + 1), p[3], ENV_FRAC_BITS);
             break;
 
         case MIMIC_MODE_ID_RECTIFIER:

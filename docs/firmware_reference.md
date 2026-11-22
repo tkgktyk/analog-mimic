@@ -161,10 +161,10 @@ Payload offsets are relative to `MODE_PAYLOAD` (0x21). Modes that group several 
 | 0x04 | `COMPARATOR` | [0] type (0: window, 1: Schmitt), [1-2] upper `raw_fx3`, [3-4] lower `raw_fx3` |
 | 0x05 | `CLIPPER` | [0] type (0: hard, 1: soft), [1-2] upper `raw_fx3`, [3-4] lower `raw_fx3` |
 | 0x06 | `RECTIFIER` | [0] type (0: full, 1: half), [1] polarity (0: positive, 1: negative) |
-| 0x07 | `ENVELOPE_FOLLOWER` | [0-1] 1 − decay mant12, [2] polarity, [3] 1 − decay shift (0: peak hold) |
+| 0x07 | `ENVELOPE_FOLLOWER` | [0] polarity (0: positive, 1: negative), [1-2] 1 − decay mant12, [3] 1 − decay shift (0: peak hold) |
 | 0x09 | `INTEGRATOR` | [0] type (0: differentiator, 1: integrator), [1-2] K mant `q0_15`, [3] K exp int8, [4-5] c mant12, [6] c shift (11 - 32; 0: none) (see below) |
 
-IDs 0x08 and 0x0A - 0x0F are **experimental**: implemented in the firmware but not yet verified on hardware and in application examples, and not yet released in the library. Their payloads may change; they are described in [experimental_modes.md](experimental_modes.md).
+IDs 0x08 and 0x0A - 0x0F, and the dead zone (type 2) of the clipper, are **experimental**: implemented in the firmware but not yet verified on hardware and in application examples, and not yet released in the library. Their payloads may change; they are described in [experimental_modes.md](experimental_modes.md).
 
 ### 0x00 Bypass
 Voltage follower. The output stage (calibration, inversion, offset) still applies.
