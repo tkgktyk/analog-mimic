@@ -54,6 +54,7 @@
 #define MIMIC_INTEGRATOR_DIFFERENTIATOR   0 // Vref + tau_d * dx/dt, band limited
 #define MIMIC_INTEGRATOR_INTEGRATOR       1 // Vref + (1 / tau_i) * integral of (x - Vref), leaky
 
+// (experimental) MULTIPLIER, LOG and OSCILLATOR
 #define MIMIC_MULTIPLIER_SQUARER          0 // (x - Vref)^2 / unit                 (0 V based output)
 #define MIMIC_MULTIPLIER_SQUARE_ROOTER    1 // sqrt((x - Vref) * unit), 0 below Vref (0 V based output)
 
@@ -184,6 +185,9 @@
 
 // =========================================================
 // Operating Mode IDs
+//   (experimental): implemented in the firmware, but not yet verified on hardware and
+//   in application examples, and not yet released in the library; the payload may change
+//   (docs/experimental_modes.md).
 // =========================================================
 
 #define MIMIC_MODE_ID_BYPASS_DSP          0x00 // DSP bypass (offset / inversion only)
@@ -194,14 +198,14 @@
 #define MIMIC_MODE_ID_CLIPPER             0x05 // Clipper (upper / lower limits, hard / soft)
 #define MIMIC_MODE_ID_RECTIFIER           0x06 // Rectifier folding at Vref (full / half)
 #define MIMIC_MODE_ID_ENVELOPE_FOLLOWER   0x07 // Envelope follower / peak hold
-#define MIMIC_MODE_ID_LOG                 0x08 // Logarithmic / antilogarithmic amplifier
+#define MIMIC_MODE_ID_LOG                 0x08 // (experimental) Logarithmic / antilogarithmic amplifier
 #define MIMIC_MODE_ID_INTEGRATOR          0x09 // Integrator / differentiator (op-amp RC circuits)
-#define MIMIC_MODE_ID_SLEW_RATE_LIMITER   0x0A // Slew rate limiter
-#define MIMIC_MODE_ID_SAMPLE_AND_HOLD     0x0B // Sample & hold / track & hold
-#define MIMIC_MODE_ID_DELAY               0x0C // Digital delay line
-#define MIMIC_MODE_ID_OSCILLATOR          0x0D // Sine oscillator / VCO (DDS)
-#define MIMIC_MODE_ID_MULTIPLIER          0x0E // Multiplier: squarer / square rooter
-#define MIMIC_MODE_ID_TRUE_RMS            0x0F // True RMS-to-DC converter
+#define MIMIC_MODE_ID_SLEW_RATE_LIMITER   0x0A // (experimental) Slew rate limiter
+#define MIMIC_MODE_ID_SAMPLE_AND_HOLD     0x0B // (experimental) Sample & hold / track & hold
+#define MIMIC_MODE_ID_DELAY               0x0C // (experimental) Digital delay line
+#define MIMIC_MODE_ID_OSCILLATOR          0x0D // (experimental) Sine oscillator / VCO (DDS)
+#define MIMIC_MODE_ID_MULTIPLIER          0x0E // (experimental) Multiplier: squarer / square rooter
+#define MIMIC_MODE_ID_TRUE_RMS            0x0F // (experimental) True RMS-to-DC converter
 
 #define MIMIC_MODE_MAX_ID                 MIMIC_MODE_ID_TRUE_RMS
 
@@ -271,7 +275,7 @@
 //   RECTIFIER          [0] type (MIMIC_RECT_*), [1] polarity (MIMIC_POLARITY_*)
 //   ENVELOPE_FOLLOWER  [0-1] 1 - decay mant12, [2] polarity, [3] 1 - decay sh
 //                      (decay per sample; 1 - decay = 0: peak hold)
-//   LOG                [0] type (MIMIC_LOG_TYPE_*), [1-2] slope raw_fx3 per decade
+//   LOG                (experimental) [0] type (MIMIC_LOG_TYPE_*), [1-2] slope raw_fx3 per decade
 //                      (signed, negative = inverting), [3-4] unit raw_fx3 (> 0).
 //                      LOG input and ANTILOG output are magnitudes from Vref / 0 V:
 //                      LOG gives Vref when x - Vref = unit.
@@ -282,17 +286,17 @@
 //                                      without leak (c sh 0) m += K * u, K = Ts / tau_i (<= 1)
 //                      differentiator: u = x[n] - x[n-1], K = tau_d * fs,
 //                                      c = 1 - exp(-Ts / tau_limit) (c sh 0: c = 1, no limit)
-//   MULTIPLIER         [0] type (MIMIC_MULTIPLIER_*), [1-2] unit raw_fx3 (> 0). The same unit
+//   MULTIPLIER         (experimental) [0] type (MIMIC_MULTIPLIER_*), [1-2] unit raw_fx3 (> 0). The same unit
 //                      in a squarer and a square-rooter module gives |x - Vref| back.
-//   TRUE_RMS           [0-1] 1 - a mant12, [2] 1 - a sh (13 - 32): averaging
+//   TRUE_RMS           (experimental) [0-1] 1 - a mant12, [2] 1 - a sh (13 - 32): averaging
 //                      m += (1 - a) * ((x - Vref)^2 - m) per sample, y = sqrt(m), gain 1
-//   OSCILLATOR         [0] type (MIMIC_OSC_*), [1-4] phase increment uint32 (< 2^31):
+//   OSCILLATOR         (experimental) [0] type (MIMIC_OSC_*), [1-4] phase increment uint32 (< 2^31):
 //                      f0 = inc * fs / 2^32, [5-6] amplitude raw_fx3 (peak, >= 0),
 //                      vco: [7-8] k mant int16, [9] k exp int8 (-16 - 4): the phase
 //                      increment changes by (x - Vref) * mant * 2^exp (0 - fs / 2).
 //                      The phase continues when the payload changes (0 on mode entry).
-//   SLEW_RATE_LIMITER  [0-1] max change per sample raw_fx3 (>= 0)
-//   SAMPLE_AND_HOLD    [0-1] period, [2-3] track (samples, uint16)
-//   DELAY              [0-1] delay (samples, uint16)
+//   SLEW_RATE_LIMITER  (experimental) [0-1] max change per sample raw_fx3 (>= 0)
+//   SAMPLE_AND_HOLD    (experimental) [0-1] period, [2-3] track (samples, uint16)
+//   DELAY              (experimental) [0-1] delay (samples, uint16)
 
 #endif // MIMIC_REGISTERS_H
