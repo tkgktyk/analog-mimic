@@ -62,7 +62,9 @@ In both engines the primary ISR and the vector table run from SRAM (`.ramfunc`),
 
 ### Cycle budget
 
-At 72 MHz and 200 kHz, one sample period is **360 CPU cycles**. The DSP core and the output stage must leave a margin (about 60 - 70 cycles) for the I²C interrupt and the main loop. The peak cycle count of the primary ISR can be read from the `CPU_CYCLES` register.
+At 72 MHz and 200 kHz, one sample period is **360 CPU cycles**. The DSP core and the output stage must leave a margin (about 60 - 70 cycles) for the I²C interrupt and the main loop. The peak cycle count of the primary ISR can be read from the `CPU_CYCLES` register; it covers the body of the ISR. The whole ISR takes about 75 cycles more: about 50 for saving and restoring the registers and about 25 for the exception entry and exit.
+
+If the ISR of a sample has not finished when the next sample starts, the `DEADLINE_MISS` status bit is set (checked at the end of the ISR body; only the register restore and the return, about 12 cycles, come after it). DMA engine: the next ADC conversion has already moved the slot to the output. CPU engine: the next conversion has finished, so its ISR and output trigger start late. With decimation the output of every sample is the interpolated value, written before the DSP core runs, so a late ISR on the DSP sample may still output on time; the bit is set anyway, because the whole ISR must fit in one sample period.
 
 ---
 
@@ -94,8 +96,8 @@ $$y = V_{ref} + H(x - V_{ref})$$
 
 Changing Vref does not reset any state; for example, a slow HPF settles to the new Vref with its own time constant.
 
-* **Input and output around Vref:** 1st-order filter, Biquad, PGA, envelope follower, rectifier, derivative / integral, LOG, oscillator (the FM input of the VCO; the output swings around Vref).
-* **Input around Vref, output a magnitude from 0 V:** ANTILOG, SQUARE, SQRT, RMS.
+* **Input and output around Vref:** 1st-order filter, Biquad, PGA, envelope follower, rectifier, integrator / differentiator, LOG, oscillator (the FM input of the VCO; the output swings around Vref).
+* **Input around Vref, output a magnitude from 0 V:** ANTILOG, squarer, square rooter, true RMS.
 * **Absolute (0 V based):** comparator and clipper thresholds.
 * **No signal center:** bypass, slew rate limiter, sample & hold, delay.
 
@@ -127,7 +129,7 @@ The module is an I²C target at address 0x40 - 0x43 (7-bit), selected by two sol
 | 0x01 | `SYSTEM_HW_VERSION` | R | uint8 | Hardware version. |
 | 0x02 - 0x05 | `SYSTEM_BUILD_DATE` | R | uint32 | Firmware build date, hex `0xYYYYMMDD` (e.g. 0x20261025). |
 | 0x06 - 0x09 | `SYSTEM_UID` | R | uint32 | Unit ID: 32-bit FNV-1a hash of the MCU unique ID. |
-| 0x0A | `SYSTEM_STATUS` | R/C | flags | Bit 0: ready, bit 1: signal saturation, bit 2: I²C error, bit 3: ADC overrun. Error bits are cleared on read. |
+| 0x0A | `SYSTEM_STATUS` | R/C | flags | Bit 0: ready, bit 1: signal saturation, bit 2: I²C error, bit 3: ADC overrun, bit 4: deadline miss (a sample was not finished in time, see 2. Cycle budget). Error bits are cleared on read. |
 | 0x0B | `SYSTEM_ADC_SEQ` | R | uint8 | Sequence number of `SYSTEM_ADC_VAL` (+1 per update, wraps at 256). Reading it latches SEQ and VAL together; read 0x0B - 0x0D in one transaction. |
 | 0x0C - 0x0D | `SYSTEM_ADC_VAL` | R | uint16 `raw_fx3` | DSP input (latched by the 0x0B read): the latest ADC sample, or the rounded average of 2^N samples when decimated. |
 | 0x0E - 0x0F | `SYSTEM_CPU_CYCLES` | R/C | uint16 | Peak cycles of the primary ISR since the last read. |
@@ -162,11 +164,13 @@ Payload offsets are relative to `MODE_PAYLOAD` (0x21). Modes that group several 
 | 0x06 | `RECTIFIER` | [0] type (0: full, 1: half), [1] polarity (0: positive, 1: negative) |
 | 0x07 | `ENVELOPE_FOLLOWER` | [0-1] 1 − decay mant12, [2] polarity, [3] 1 − decay shift (0: peak hold) |
 | 0x08 | `LOG` | [0] type (0: log, 1: antilog), [1-2] slope `raw_fx3` per decade (signed), [3-4] unit `raw_fx3` (> 0) |
-| 0x09 | `MATH` | [0] type (0: derivative, 1: integral, 2: square, 3: square root, 4: RMS). Derivative: [1-2] scale mant `q0_15`, [3] scale exp int8 (0 - 15). Integral: [1-2] 1 − leak mant12, [3] input shift int8 (≤ 1), [4] 1 − leak shift (0: no leak). Square, square root: [1-2] unit `raw_fx3` (> 0). RMS: [1-2] 1 − a mant12, [3] 1 − a shift (13 - 32) |
+| 0x09 | `INTEGRATOR` | [0] type (0: differentiator, 1: integrator), [1-2] K mant `q0_15`, [3] K exp int8, [4-5] c mant12, [6] c shift (11 - 32; 0: none) (see below) |
 | 0x0A | `SLEW_RATE_LIMITER` | [0-1] maximum change per sample `raw_fx3` (≥ 0) |
 | 0x0B | `SAMPLE_AND_HOLD` | [0-1] period, [2-3] track time (samples, uint16) |
 | 0x0C | `DELAY` | [0-1] delay (samples, uint16, up to 4095) |
 | 0x0D | `OSCILLATOR` | [0] type (0: sine, 1: VCO), [1-4] phase increment uint32, [5-6] amplitude `raw_fx3`, [7-8] VCO gain mant int16, [9] VCO gain exp int8 (−16 - 4) |
+| 0x0E | `MULTIPLIER` | [0] type (0: squarer, 1: square rooter), [1-2] unit `raw_fx3` (> 0) |
+| 0x0F | `TRUE_RMS` | [0-1] 1 − a mant12, [2] 1 − a shift (13 - 32) |
 
 ### 0x00 Bypass
 Voltage follower. The output stage (calibration, inversion, offset) still applies.
@@ -228,15 +232,18 @@ Logarithmic amplifier: $y = V_{ref} + \text{slope} \cdot \log_{10}((x - V_{ref})
 
 With the supply headroom (about 0.1 V from each rail), a 0 V based input or output spans about 1.7 decades at VDD = 5 V.
 
-### 0x09 Math
-Derivative: $y = V_{ref} + s \cdot \Delta x$ with $s = \text{mant} \cdot 2^{\text{exp}}$. Leaky integrator: every sample, the state is multiplied by the leak factor $a$ and the input relative to Vref, scaled by $2^{\text{shift}}$ (shift ≤ 1; negative values attenuate), is added. $1 - a$ is sent as a 12-bit mantissa and a shift; $1 - a = 0$ gives a pure integrator. The state keeps 14 fractional bits below `raw_fx3`, so small inputs are integrated and the state decays to Vref without a dead band. The output is Vref plus the state.
+### 0x09 Integrator / differentiator
+The op-amp integrator (input R, feedback C, with a leak resistor across the capacitor) and differentiator (input C with a series resistor, feedback R). Both use one update, with $u$ the input relative to Vref for the integrator and its change per sample for the differentiator:
 
-Square, square root and RMS take the input relative to Vref ($d = x - V_{ref}$) and output a magnitude from 0 V, like ANTILOG.
+$$m \leftarrow m + c\,(K u - m), \qquad y = V_{ref} + m$$
 
-* **Square:** $y = d^2 / \text{unit}$, rounded once. Squaring a sine doubles its frequency ($\sin^2 = (1 - \cos 2\omega t) / 2$); it also gives a value proportional to power.
-* **Square root:** $y = \sqrt{d \cdot \text{unit}}$, 0 below Vref. For a sensor with a zero offset (a differential pressure sensor at VDD / 2, for example), set Vref to its zero: the output is then proportional to the flow ($v \propto \sqrt{\Delta p}$). Computed with a 193-point table and linear interpolation after normalizing the argument (error below 0.15 `raw_fx3` before rounding).
-* **Square → square root:** with the same unit in both, a square module followed by a square-root module gives $|d|$ back; with different units the gain is $\sqrt{\text{unit}_{\text{sqrt}} / \text{unit}_{\text{square}}}$. A square → 1st-order LPF → square-root chain is an RMS converter, but every link is quantized to 12 bits and the square loses the bottom of its range to the supply headroom, so the chain is limited to large signals (an error of a few percent at 0.8 V amplitude). This is why RMS converters are built as one circuit.
-* **RMS:** $m \leftarrow m + (1 - a)(d^2 - m)$, $y = \sqrt{m}$: a true RMS converter with the averaging time constant set by $1 - a$, like the averaging capacitor of an RMS converter IC, and a gain of 1. The mean square is kept in 64 bits, so the average has no dead band even for time constants of seconds and small signals. To keep the peak cycle count low, the work is split over two samples: the square root is computed and the output refreshed every second sample. Decimation averages the input before the DSP and removes the AC signal, so use the RMS mode without decimation. Slew rate limiter
+* **Integrator with leak:** $u = x - V_{ref}$, $K = \tau_{leak} / \tau_i$ (the DC gain), $c = 1 - e^{-T_s/\tau_{leak}}$: a 1st-order low-pass with gain, as the analog circuit is.
+* **Integrator without leak** (c shift 0): $m \leftarrow m + K u$ with $K = T_s / \tau_i \le 1$. The output stops at ±8192 LSB.
+* **Differentiator:** $u = x[n] - x[n-1]$, $K = \tau_d f_s$, $c = 1 - e^{-T_s/\tau_{limit}}$ for the band limit of the series resistor (c shift 0: $c = 1$, the plain difference of two samples).
+
+$K = \text{mant} \cdot 2^{\text{exp} - 15}$; $c = \text{mant} / 2^{\text{shift}}$. $m$ keeps 14 fractional bits below `raw_fx3`, and the remainder of every right shift is carried to the next sample, so small inputs, small $c$ and large DC gains accumulate exactly: there is no dead band even with time constants of seconds. With a leak, $K u - m$ enters the update at 1/2 `raw_fx3` (rounded), the only rounding. The output is kept when the settings change.
+
+### 0x0A Slew rate limiter
 Limits the change of the output per sample (`raw_fx3`, so the smallest step is 1/8 LSB per processed sample). The output starts at mid-scale when the mode is selected.
 
 ### 0x0B Sample & hold
@@ -254,3 +261,13 @@ $$y = V_{ref} + A \sin\varphi, \qquad \varphi \leftarrow \varphi + \text{inc}, \
 * **VCO:** the frequency follows the input, $f = f_0 + k (x - V_{ref})$ (linear FM, limited to 0 - $f_s/2$), with $k$ = mant × 2^exp as a phase increment per `raw_fx3`. For an exponential (1 V/oct) control, put an ANTILOG module in front.
 
 The phase continues when the payload changes (like changing the frequency or the amplitude of an analog oscillator) and starts at 0 when the mode is selected. The output is analog only. Sine waves above about 20 kHz have few samples per cycle and depend on the anti-imaging filter. With decimation the frequency is divided by 2^N, like every other time constant.
+
+### 0x0E Multiplier
+The squarer (an analog multiplier with both inputs tied) and the square rooter (a multiplier in the feedback of an op-amp). Both take the input relative to Vref ($d = x - V_{ref}$) and output a magnitude from 0 V, like ANTILOG.
+
+* **Squarer:** $y = d^2 / \text{unit}$, rounded once. Squaring a sine doubles its frequency ($\sin^2 = (1 - \cos 2\omega t) / 2$); it also gives a value proportional to power.
+* **Square rooter:** $y = \sqrt{d \cdot \text{unit}}$, 0 below Vref. For a sensor with a zero offset (a differential pressure sensor at VDD / 2, for example), set Vref to its zero: the output is then proportional to the flow ($v \propto \sqrt{\Delta p}$). Computed with a 193-point table and linear interpolation after normalizing the argument (error below 0.15 `raw_fx3` before rounding).
+* **Squarer → square rooter:** with the same unit in both, a squarer module followed by a square-rooter module gives $|d|$ back; with different units the gain is $\sqrt{\text{unit}_{\text{rooter}} / \text{unit}_{\text{squarer}}}$. A squarer → 1st-order LPF → square-rooter chain is an RMS converter, but every link is quantized to 12 bits and the squarer loses the bottom of its range to the supply headroom, so the chain is limited to large signals (an error of a few percent at 0.8 V amplitude). This is why RMS converters are built as one circuit (0x0F).
+
+### 0x0F True RMS
+A true RMS-to-DC converter: $m \leftarrow m + (1 - a)(d^2 - m)$, $y = \sqrt{m}$ with $d = x - V_{ref}$, a magnitude from 0 V. The averaging time constant is set by $1 - a$, like the averaging capacitor of an RMS converter IC, and the gain is 1. The mean square is kept in 64 bits, so the average has no dead band even for time constants of seconds and small signals. To keep the peak cycle count low, the work is split over two samples: every square enters the mean, and the square root is computed and the output refreshed every second sample. Decimation averages the input before the DSP and removes the AC signal, and the processing with decimation does not fit in one sample period, so use the true RMS mode without decimation.

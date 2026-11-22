@@ -51,11 +51,11 @@
 #define MIMIC_FILTER_BIQUAD_UNITY         4 // Passes the input, same CPU load (profiling)
 #define MIMIC_FILTER_BIQUAD_APF           5 // All-pass (phase shifter), x - 2 k bp
 
-#define MIMIC_MATH_DERIVATIVE             0
-#define MIMIC_MATH_INTEGRAL               1
-#define MIMIC_MATH_SQUARE                 2 // (x - Vref)^2 / unit                 (0 V based output)
-#define MIMIC_MATH_SQRT                   3 // sqrt((x - Vref) * unit), 0 below Vref (0 V based output)
-#define MIMIC_MATH_RMS                    4 // sqrt(mean((x - Vref)^2))            (0 V based output)
+#define MIMIC_INTEGRATOR_DIFFERENTIATOR   0 // Vref + tau_d * dx/dt, band limited
+#define MIMIC_INTEGRATOR_INTEGRATOR       1 // Vref + (1 / tau_i) * integral of (x - Vref), leaky
+
+#define MIMIC_MULTIPLIER_SQUARER          0 // (x - Vref)^2 / unit                 (0 V based output)
+#define MIMIC_MULTIPLIER_SQUARE_ROOTER    1 // sqrt((x - Vref) * unit), 0 below Vref (0 V based output)
 
 #define MIMIC_LOG_TYPE_LOG                0 // Vref + slope * log10((x - Vref) / unit)
 #define MIMIC_LOG_TYPE_ANTILOG            1 // unit * 10^((x - Vref) / slope)      (0 V based output)
@@ -171,6 +171,7 @@
 #define MIMIC_STATUS_SIGNAL_SATURATION    (1 << 1)
 #define MIMIC_STATUS_I2C_COM_ERR          (1 << 2)
 #define MIMIC_STATUS_ADC_OVER_ERR         (1 << 3)
+#define MIMIC_STATUS_DEADLINE_MISS        (1 << 4) // A sample was not finished in time (output repeated or late)
 #define MIMIC_STATUS_STATE_MASK           (MIMIC_STATUS_SYSTEM_READY)
 
 // --- Global Control Flags ---
@@ -194,13 +195,15 @@
 #define MIMIC_MODE_ID_RECTIFIER           0x06 // Rectifier folding at Vref (full / half)
 #define MIMIC_MODE_ID_ENVELOPE_FOLLOWER   0x07 // Envelope follower / peak hold
 #define MIMIC_MODE_ID_LOG                 0x08 // Logarithmic / antilogarithmic amplifier
-#define MIMIC_MODE_ID_MATH                0x09 // Derivative / leaky integrator
+#define MIMIC_MODE_ID_INTEGRATOR          0x09 // Integrator / differentiator (op-amp RC circuits)
 #define MIMIC_MODE_ID_SLEW_RATE_LIMITER   0x0A // Slew rate limiter
 #define MIMIC_MODE_ID_SAMPLE_AND_HOLD     0x0B // Sample & hold / track & hold
 #define MIMIC_MODE_ID_DELAY               0x0C // Digital delay line
 #define MIMIC_MODE_ID_OSCILLATOR          0x0D // Sine oscillator / VCO (DDS)
+#define MIMIC_MODE_ID_MULTIPLIER          0x0E // Multiplier: squarer / square rooter
+#define MIMIC_MODE_ID_TRUE_RMS            0x0F // True RMS-to-DC converter
 
-#define MIMIC_MODE_MAX_ID                 MIMIC_MODE_ID_OSCILLATOR
+#define MIMIC_MODE_MAX_ID                 MIMIC_MODE_ID_TRUE_RMS
 
 
 // =========================================================
@@ -272,15 +275,17 @@
 //                      (signed, negative = inverting), [3-4] unit raw_fx3 (> 0).
 //                      LOG input and ANTILOG output are magnitudes from Vref / 0 V:
 //                      LOG gives Vref when x - Vref = unit.
-//   MATH               [0] type (MIMIC_MATH_*)
-//                      derivative: [1-2] scale mant q0_15, [3] scale exp int8 (0 - 15)
-//                      integral:   [1-2] 1 - leak mant12, [3] input shift int8 (<= 1),
-//                                  [4] 1 - leak sh (leak per sample; 1 - leak = 0: no leak)
-//                      square:     [1-2] unit raw_fx3 (> 0)
-//                      sqrt:       [1-2] unit raw_fx3 (> 0). The same unit in a square and
-//                                  a sqrt module gives |x - Vref| back.
-//                      rms:        [1-2] 1 - a mant12, [3] 1 - a sh (13 - 32): averaging
-//                                  m += (1 - a) * ((x - Vref)^2 - m) per sample, gain 1
+//   INTEGRATOR         [0] type (MIMIC_INTEGRATOR_*), [1-2] K mant q0_15, [3] K exp int8:
+//                      K = mant * 2^(exp - 15), [4-5] c mant12, [6] c sh (11 - 32; 0: none):
+//                      c = mant / 2^sh. Per sample m += c * (K * u - m), y = Vref + m.
+//                      integrator:     u = x - Vref; with leak K = DC gain, c = 1 - exp(-Ts / tau_leak);
+//                                      without leak (c sh 0) m += K * u, K = Ts / tau_i (<= 1)
+//                      differentiator: u = x[n] - x[n-1], K = tau_d * fs,
+//                                      c = 1 - exp(-Ts / tau_limit) (c sh 0: c = 1, no limit)
+//   MULTIPLIER         [0] type (MIMIC_MULTIPLIER_*), [1-2] unit raw_fx3 (> 0). The same unit
+//                      in a squarer and a square-rooter module gives |x - Vref| back.
+//   TRUE_RMS           [0-1] 1 - a mant12, [2] 1 - a sh (13 - 32): averaging
+//                      m += (1 - a) * ((x - Vref)^2 - m) per sample, y = sqrt(m), gain 1
 //   OSCILLATOR         [0] type (MIMIC_OSC_*), [1-4] phase increment uint32 (< 2^31):
 //                      f0 = inc * fs / 2^32, [5-6] amplitude raw_fx3 (peak, >= 0),
 //                      vco: [7-8] k mant int16, [9] k exp int8 (-16 - 4): the phase
