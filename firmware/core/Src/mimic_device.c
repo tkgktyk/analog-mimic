@@ -157,6 +157,7 @@ static void UpdateDSPConfiguration(void)
     config.gain_uq1_15  = (int32_t)ReadRegU16(MIMIC_REG_NVM_GAIN);
     config.offset_raw_fx3 = (int32_t)ReadRegS16(MIMIC_REG_GLOBAL_OFFSET) + ReadRegS16(MIMIC_REG_NVM_OFFSET);
     config.vref_raw_fx3   = ReadRegS16(MIMIC_REG_GLOBAL_VREF);
+    Mimic_HW_SetTestPad(MimicDevice_ReadReg(MIMIC_REG_GLOBAL_TEST_PAD));
 
     memcpy(config.payload,
            (const void *)&mimic_device.registers[MIMIC_REG_MODE_PAYLOAD_START],

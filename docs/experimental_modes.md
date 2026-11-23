@@ -19,6 +19,17 @@ The conventions (`raw_fx3`, Vref, output stage, payload offsets from `MODE_PAYLO
 | 0x12 | `VF_CONVERTER` | [0-3] phase increment (frequency at Vref), [4-5] gain mant int16, [6] gain exp int8 |
 | 0x13 | `NOISE` | [0] color (0: white, 1: pink), [1-2] amplitude `raw_fx3` |
 
+## Test pad (register 0x16, experimental)
+
+`GLOBAL_TEST_PAD` (0x16) selects the signal on the test pad (PA2 on mimic01); `begin()` of the library sets it to 0.
+
+| 0x16 | Signal |
+| --- | --- |
+| 0 | Off: PA2 not driven (analog, Hi-Z), as after reset |
+| 1 | Sample clock: a 100 kHz square wave that toggles at every sample (TIM2 update resets TIM1; TIM1 clocks TIM15, which divides it by 2) |
+
+Other values are off. The timers run in hardware, so the sample clock adds no load to the ISR. It is the reference for the output timing: with an oscillator square wave at $f_s/2$ (analog route) or a V/F converter at $f_s/2$ (digital route), the output also changes at every sample. The output timing build (`make dac`) keeps the sample clock on.
+
 ## Common reference (Vref)
 
 * **Input and output around Vref:** LOG, oscillator, modulator, noise (the input of the VCO, the modulator, the PWM modulator and the V/F converter is taken from Vref).

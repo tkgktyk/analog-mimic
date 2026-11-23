@@ -104,6 +104,7 @@ void Mimic_SetReadyLED(bool is_on);
  * @brief Fatal hardware error trap (blinks Ready LED indefinitely).
  */
 void Mimic_HW_ErrorTrap(void);
+void Mimic_HW_SetTestPad(uint8_t source);
 
 #ifdef __cplusplus
 }

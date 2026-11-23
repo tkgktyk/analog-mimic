@@ -106,10 +106,8 @@ static volatile __attribute__((aligned(256))) uint32_t ram_vector_table[VECTOR_T
 static ADC_HandleTypeDef hadc1;
 static DAC_HandleTypeDef hdac1;
 static TIM_HandleTypeDef htim2;
-#ifdef ENABLE_DAC_PULSE
-static TIM_HandleTypeDef htim1;
+static TIM_HandleTypeDef htim1;    // test pad: sample clock
 static TIM_HandleTypeDef htim15;
-#endif
 static OPA_HandleTypeDef hopa1;
 static OPA_HandleTypeDef hopa2;
 static OPA_HandleTypeDef hopa3;
@@ -146,10 +144,8 @@ static void MX_DAC_Init(void);
 static void MX_OPA_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TestPad_Init(void);
-#ifdef ENABLE_DAC_PULSE
 static void MX_TIM1_Init(void);
 static void MX_TIM15_Init(void);
-#endif
 #ifdef MIMIC_ENGINE_DMA
 static void MX_OutputDMA_Init(void);
 #endif
@@ -637,33 +633,57 @@ static void MX_OPA_Init(void)
 }
 
 /**
- * @brief Test pad (PA2): sampling reference clock for the output timing build
+ * @brief Test pad (PA2): the sample clock, selected by MIMIC_REG_GLOBAL_TEST_PAD
+ *        (MIMIC_TEST_PAD_SAMPLE_CLOCK), and always on in the output timing build
  *        (make dac, ENABLE_DAC_PULSE).
  *
  * TIM2 update resets TIM1; TIM1 TRGO clocks TIM15, which divides it by 2, so PA2
  * (TIM15_CH1, AF0) carries a 100 kHz square wave that toggles at every sample.
- * In the normal build the timers are not started and PA2 is left unconfigured.
+ * Until the test pad is selected the timers are not started and PA2 is left analog.
  * PB3 is not used: on mimic01 it is an I2C address jumper (A1).
  */
 static void MX_TestPad_Init(void)
 {
 #ifdef ENABLE_DAC_PULSE
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-    MX_TIM1_Init();
-    MX_TIM15_Init();
-
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    GPIO_InitStruct.Pin       = MIMIC_TEST_PAD_PIN;
-    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull      = GPIO_NOPULL;
-    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF0_TIM15;
-    HAL_GPIO_Init(MIMIC_TEST_PAD_PORT, &GPIO_InitStruct);
+    Mimic_HW_SetTestPad(MIMIC_TEST_PAD_SAMPLE_CLOCK);   // make dac: always the sample clock
 #endif
 }
 
+/**
+ * @brief Selects the signal on the test pad (PA2), from MIMIC_REG_GLOBAL_TEST_PAD.
+ *        MIMIC_TEST_PAD_SAMPLE_CLOCK: the timers are set up on the first use and keep running
+ *        (no ISR load); OFF puts PA2 back to analog (Hi-Z), as after reset.
+ */
+void Mimic_HW_SetTestPad(uint8_t source)
+{
+    static uint8_t current = MIMIC_TEST_PAD_OFF;
+    static bool timers_ready = false;
 #ifdef ENABLE_DAC_PULSE
+    source = MIMIC_TEST_PAD_SAMPLE_CLOCK;
+#endif
+    if (source != MIMIC_TEST_PAD_SAMPLE_CLOCK) source = MIMIC_TEST_PAD_OFF;
+    if (source == current) return;
+
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    GPIO_InitStruct.Pin  = MIMIC_TEST_PAD_PIN;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    if (source == MIMIC_TEST_PAD_SAMPLE_CLOCK) {
+        if (!timers_ready) {
+            MX_TIM1_Init();
+            MX_TIM15_Init();
+            timers_ready = true;
+        }
+        GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_HIGH;
+        GPIO_InitStruct.Alternate = GPIO_AF0_TIM15;
+    } else {
+        GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+    }
+    HAL_GPIO_Init(MIMIC_TEST_PAD_PORT, &GPIO_InitStruct);
+    current = source;
+}
+
 static void MX_TIM1_Init(void)
 {
     TIM_ClockConfigTypeDef sClock  = {0};
@@ -733,7 +753,6 @@ static void MX_TIM15_Init(void)
 
     HAL_TIM_PWM_Start(&htim15, TIM_CHANNEL_1);
 }
-#endif
 
 static void MX_TIM2_Init(void)
 {

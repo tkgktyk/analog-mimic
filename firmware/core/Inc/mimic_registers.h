@@ -70,6 +70,10 @@
 #define MIMIC_OSC_WAVE_SQUARE             2 // +amplitude in the first half of the period
 #define MIMIC_OSC_WAVE_SAWTOOTH           3 // rises from -amplitude to +amplitude
 
+// (experimental) Signals on the test pad (MIMIC_REG_GLOBAL_TEST_PAD; other values: off)
+#define MIMIC_TEST_PAD_OFF                0 // not driven (analog, Hi-Z)
+#define MIMIC_TEST_PAD_SAMPLE_CLOCK       1 // 100 kHz square, toggles at every sample (TIM2 -> TIM1 -> TIM15)
+
 // (experimental) Noise colors (payload [0] of MIMIC_MODE_ID_NOISE)
 #define MIMIC_NOISE_WHITE                 0 // uniform within +/-amplitude
 #define MIMIC_NOISE_PINK                  1 // -3 dB/octave, rms amplitude / 3 (clipped beyond)
@@ -136,7 +140,8 @@
 #define MIMIC_REG_GLOBAL_VREF_H           0x14 // Common reference voltage (Vref)
 #define MIMIC_REG_GLOBAL_VREF_L           0x15
 #define MIMIC_REG_GLOBAL_VREF             MIMIC_REG_GLOBAL_VREF_H
-#define MIMIC_REG_GLOBAL_END              0x15
+#define MIMIC_REG_GLOBAL_TEST_PAD         0x16 // (experimental) Signal on the test pad (MIMIC_TEST_PAD_*)
+#define MIMIC_REG_GLOBAL_END              0x16
 
 // --- Mode-Specific Parameter Blocks ---
 #define MIMIC_REG_MODE_START              0x20
