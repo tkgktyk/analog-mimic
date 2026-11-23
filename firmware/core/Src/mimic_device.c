@@ -133,7 +133,8 @@ static MimicOutputRoute_t ResolveOutputRoute(uint8_t mode_id, uint8_t global_fla
     if (global_flags & MIMIC_FLAG_OUT_OPEN) {
         return MIMIC_OUT_OPEN;
     }
-    if (mode_id == MIMIC_MODE_ID_COMPARATOR) {
+    if (mode_id == MIMIC_MODE_ID_COMPARATOR || mode_id == MIMIC_MODE_ID_PWM_MODULATOR ||
+        mode_id == MIMIC_MODE_ID_VF_CONVERTER) {
         return MIMIC_OUT_DIGITAL;
     }
     return MIMIC_OUT_ANALOG;

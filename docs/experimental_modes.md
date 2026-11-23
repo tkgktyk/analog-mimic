@@ -11,13 +11,17 @@ The conventions (`raw_fx3`, Vref, output stage, payload offsets from `MODE_PAYLO
 | 0x0A | `SLEW_RATE_LIMITER` | [0-1] maximum change per sample `raw_fx3` (≥ 0) |
 | 0x0B | `SAMPLE_AND_HOLD` | [0-1] period, [2-3] track time (samples, uint16) |
 | 0x0C | `DELAY` | [0-1] delay (samples, uint16, up to 4095) |
-| 0x0D | `OSCILLATOR` | [0] type (0: fixed frequency, 1: VCO), [1] waveform (0: sine, 1: triangle, 2: square, 3: sawtooth), [2-5] phase increment uint32, [6-7] amplitude `raw_fx3`, [8-9] VCO gain mant int16, [10] VCO gain exp int8 (−16 - 4) |
+| 0x0D | `OSCILLATOR` | [0] waveform (0: sine, 1: triangle, 2: square, 3: sawtooth), [1-4] phase increment uint32, [5-6] amplitude `raw_fx3`, [7-8] VCO gain mant int16, [9] VCO gain exp int8 (−16 - 4; mant 0: fixed frequency) |
 | 0x0E | `MULTIPLIER` | [0] type (0: squarer, 1: square rooter), [1-2] unit `raw_fx3` (> 0) |
 | 0x0F | `TRUE_RMS` | [0-1] 1 − a mant12, [2] 1 − a shift (13 - 32) |
+| 0x10 | `MODULATOR` | [0] carrier waveform, [1-4] phase increment, [5-6] carrier amplitude `raw_fx3`, [7-8] gain mant int16, [9] gain exp int8 |
+| 0x11 | `PWM_MODULATOR` | [0] carrier waveform, [1-4] phase increment, [5-6] full scale `raw_fx3` |
+| 0x12 | `VF_CONVERTER` | [0-3] phase increment (frequency at Vref), [4-5] gain mant int16, [6] gain exp int8 |
+| 0x13 | `NOISE` | [0] color (0: white, 1: pink), [1-2] amplitude `raw_fx3` |
 
 ## Common reference (Vref)
 
-* **Input and output around Vref:** LOG, oscillator (the FM input of the VCO; the output swings around Vref).
+* **Input and output around Vref:** LOG, oscillator, modulator, noise (the input of the VCO, the modulator, the PWM modulator and the V/F converter is taken from Vref).
 * **Input around Vref, output a magnitude from 0 V:** ANTILOG, squarer, square rooter, true RMS.
 * **Absolute limits, output around Vref:** dead zone (clipper type 2).
 * **No signal center:** slew rate limiter, sample & hold, delay.
@@ -48,26 +52,27 @@ Tracks the input for the first *track* samples of every *period* samples and hol
 Delays the input by the given number of samples (ring buffer of 4096 samples), like a 4096-stage bucket-brigade delay line.
 
 ### 0x0D Oscillator
-An oscillator (function generator) made by direct digital synthesis (DDS): a 32-bit phase accumulator, and a waveform computed from the phase.
+A function generator / VCO made by direct digital synthesis (DDS): a 32-bit phase accumulator, and a waveform computed from the phase.
 
-$$y = V_{ref} + A\,w(\varphi), \qquad \varphi \leftarrow \varphi + \text{inc}, \qquad f_0 = \text{inc} \cdot f_s / 2^{32}$$
+$$y = V_{ref} + A\,w(\varphi), \qquad \varphi \leftarrow \varphi + \text{inc}, \qquad f = f_0 + k (x - V_{ref}), \qquad f_0 = \text{inc} \cdot f_s / 2^{32}$$
 
 Every waveform is 0 at phase 0 and rises, so the output starts at Vref when the mode is selected:
 
-| [1] | Waveform $w(\varphi)$ |
+| [0] | Waveform $w(\varphi)$ |
 | --- | --- |
 | 0 | Sine: a 256-segment table with linear interpolation (error below 1e-4 of the amplitude) |
 | 1 | Triangle: +1 at a quarter period, −1 at three quarters |
 | 2 | Square: +1 in the first half period, −1 in the second |
 | 3 | Sawtooth: rises from −1 to +1 over the period (the step is at half the period) |
 
-Other values give the sine. The square and the sawtooth change within one sample, so their harmonics above $f_s/2$ fold back (alias); like the sine, they are best kept well below 20 kHz. 
+Other values give the sine. The square and the sawtooth change within one sample, so their harmonics above $f_s/2$ fold back (alias); like the sine, they are best kept well below 20 kHz.
 
-Type [0]:
-* **Fixed frequency** (type 0, `MIMIC_OSC_FIXED`): $f_0$ (0 - $f_s/2$; resolution 0.05 mHz at 200 kHz). With $f_0 = 0$ the output stays at Vref, which makes the module a constant voltage source (set by Vref).
-* **VCO:** the frequency follows the input, $f = f_0 + k (x - V_{ref})$ (linear FM, limited to 0 - $f_s/2$), with $k$ = mant × 2^exp as a phase increment per `raw_fx3`. For an exponential (1 V/oct) control, put an ANTILOG module in front.
+* **Fixed frequency** ($k = 0$): $f_0$ (0 - $f_s/2$; resolution 0.05 mHz at 200 kHz). With $f_0 = 0$ the output stays at Vref, which makes the module a constant voltage source (set by Vref).
+* **VCO** ($k \ne 0$): the frequency follows the input (linear FM, limited to 0 - $f_s/2$), with $k$ = mant × 2^exp as a phase increment per `raw_fx3`. For an exponential (1 V/oct) control, put an ANTILOG module in front.
 
-The phase continues when the payload changes (like changing the frequency or the amplitude of an analog oscillator) and starts at 0 when the mode is selected. The output is analog only. Sine waves above about 20 kHz have few samples per cycle and depend on the anti-imaging filter. With decimation the frequency is divided by 2^N, like every other time constant.
+The phase continues when the payload changes (like changing the frequency or the amplitude of an analog oscillator) and starts at 0 when the mode is selected. The output is analog. Sine waves above about 20 kHz have few samples per cycle and depend on the anti-imaging filter. With decimation the frequency is divided by 2^N, like every other time constant.
+
+The modulator, the PWM modulator and the V/F converter (0x10 - 0x12) use the same DDS core and the same waveforms.
 
 ### 0x0E Multiplier
 The squarer (an analog multiplier with both inputs tied) and the square rooter (a multiplier in the feedback of an op-amp). Both take the input relative to Vref ($d = x - V_{ref}$) and output a magnitude from 0 V, like ANTILOG.
@@ -78,3 +83,22 @@ The squarer (an analog multiplier with both inputs tied) and the square rooter (
 
 ### 0x0F True RMS
 A true RMS-to-DC converter: $m \leftarrow m + (1 - a)(d^2 - m)$, $y = \sqrt{m}$ with $d = x - V_{ref}$, a magnitude from 0 V. The averaging time constant is set by $1 - a$, like the averaging capacitor of an RMS converter IC, and the gain is 1. The mean square is kept in 64 bits, so the average has no dead band even for time constants of seconds and small signals. To keep the peak cycle count low, the work is split over two samples: every square enters the mean, and the square root is computed and the output refreshed every second sample. Decimation averages the input before the DSP and removes the AC signal, and the processing with decimation does not fit in one sample period, so use the true RMS mode without decimation.
+
+### 0x10 Modulator (balanced modulator: AM / ring)
+A multiplier-based modulator (MC1496): the amplitude of the internal carrier follows the input,
+
+$$y = V_{ref} + (A + k (x - V_{ref}))\,w(\varphi)$$
+
+with the payload of the oscillator ($k$ = mant × 2^exp as a gain). The library sends $k = A m$ for a modulation depth $m$ per volt (AM). Like a multiplier, the carrier is inverted below −100 % modulation; the amplitude is limited to ±VDD × 2. **$A = 0$ gives the balanced (ring, DSB) modulator** $y = V_{ref} + k (x - V_{ref})\,w(\varphi)$: the sum and difference frequencies without the carrier; with the square wave it is a chopper.
+
+### 0x11 PWM modulator
+A comparator against an internal carrier (natural sampling), on the digital output route: HIGH while $x - V_{ref} > A\,w(\varphi)$. With the triangle both edges move; with the sawtooth one edge is fixed. The duty cycle goes from 0 % at $V_{ref} - A$ to 100 % at $V_{ref} + A$; each edge falls on a sample, so the resolution is $f_0 / f_s$ (0.5 % at 1 kHz).
+
+### 0x12 V/F converter
+The frequency computation of the VCO with a square output (50 % duty), on the digital output route, like an LM331 followed by a counter: $f = f_0 + k (x - V_{ref})$, limited to 0 - $f_s/2$. The output stays HIGH when the frequency is 0. A single period varies by one sample (±5 µs); the average frequency is exact. The digital route keeps the edges sharp: on the analog route the anti-imaging filter would round them and reduce the amplitude above 20 kHz (for an analog square wave, use the VCO with the square waveform).
+
+### 0x13 Noise generator
+* **White** (color 0): xorshift32, uniform within ±A (rms $A/\sqrt{3}$).
+* **Pink** (color 1, −3 dB/octave): the Voss-McCartney method. Twelve random rows, row $k$ renewed every $2^{k+1}$ samples (one row per sample, chosen by the trailing zeros of a counter), plus a white part renewed every sample. The sum is scaled to an rms of $A/3$ and limited to ±A (beyond 3 σ). At 200 kHz the slope holds from about 25 Hz to $f_s/2$; decimation moves the band down by 2^N.
+
+The noise keeps its state when the payload changes, and restarts from the same seed when the mode is selected. The input is not used.

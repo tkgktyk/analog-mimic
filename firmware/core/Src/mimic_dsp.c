@@ -103,6 +103,12 @@ static volatile uint32_t mimic_output_slot = MIMIC_ADC_MID_VALUE;
 #define OSC_FRAC_BITS       16                             // interpolation fraction
 #define OSC_INC_MAX         0x7FFFFFFF                     // fs / 2
 #define OSC_FM_LIM          (1 << 30)                      // |FM deviation| <= fs / 4
+// Noise: xorshift32; pink by the Voss-McCartney method: NOISE_ROWS random rows, row k
+// renewed every 2^(k+1) samples (one row per sample, chosen by the trailing zeros of a
+// counter), plus a white part renewed every sample
+#define NOISE_ROWS          12                             // lowest octave about fs / 2^13 (24 Hz)
+#define NOISE_PINK_GAIN     41                             // (rows + white) * gain / 256: rms 1/3
+#define NOISE_RNG_SEED      0x2545F491u                    // xorshift32 state on mode entry (not 0)
 
 // =========================================================
 // Base Tables (LOG mode, used at configuration time)
@@ -327,17 +333,26 @@ typedef struct {
     uint32_t delay_write_ptr; // State
 } Delay_t;
 
+// Oscillator, modulator, PWM modulator and V/F converter (DDS)
 typedef struct {
-    uint8_t  type;            // Config: MIMIC_OSC_*
-    uint8_t  wave;            // Config: MIMIC_OSC_WAVE_*
+    uint8_t  wave;            // Config: MIMIC_OSC_WAVE_* (oscillator, modulator, PWM carrier)
     uint32_t inc;             // Config: phase increment per sample (f0)
-    int32_t  amp_raw_fx3;     // Config: peak amplitude
-    int32_t  k_mant;          // Config: vco, FM gain mantissa
-    int32_t  k_ls;            // Config: vco, FM gain left shift (0 - 4)
-    int32_t  k_rs;            // Config: vco, FM gain right shift (0 - 16)
-    int32_t  k_lim;           // Config: vco, clamp of (x - Vref) * mant before the left shift
+    int32_t  amp_raw_fx3;     // Config: peak amplitude (modulator: carrier without input)
+    int32_t  k_mant;          // Config: k mantissa (0: none): FM (VCO, V/F) or gain (modulator)
+    int32_t  k_ls;            // Config: k left shift (0 - 4)
+    int32_t  k_rs;            // Config: k right shift (0 - 16)
+    int32_t  k_lim;           // Config: clamp of (x - Vref) * mant before the left shift
     uint32_t phase;           // State: 32-bit phase (0 - 2 pi)
 } Osc_t;
+
+typedef struct {
+    uint8_t  color;           // Config: MIMIC_NOISE_*
+    int32_t  amp_raw_fx3;     // Config: white: peak; pink: 3 x rms
+    uint32_t rng;             // State: xorshift32 (not 0)
+    uint32_t count;           // State: selects the pink row to renew
+    int32_t  sum;             // State: sum of the pink rows
+    int32_t  rows[NOISE_ROWS];
+} Noise_t;
 
 typedef struct {
     uint8_t type;             // Config: MIMIC_LOG_TYPE_*
@@ -361,6 +376,7 @@ typedef union {
     Delay_t      delay;
     Log_t        log;
     Osc_t        osc;
+    Noise_t      noise;
 } DSPContext_u;
 
 static DSPContext_u dsp_ctx;
@@ -726,37 +742,102 @@ static inline __attribute__((always_inline)) int32_t ProcessTrueRms(int32_t x_ra
 
 // Oscillator (DDS): y = Vref + amplitude * sin(phase), phase += inc (+ FM for the VCO).
 // 256-segment table with linear interpolation (error < 1e-4 of the amplitude).
-static inline __attribute__((always_inline)) int32_t ProcessOscillator(int32_t x_raw_fx3) {
-    Osc_t *p = &dsp_ctx.osc;
-    const int32_t *t = dsp_work.sine_q15;
-
-    uint32_t ph = p->phase;
-    int32_t  w;                                   // waveform, q15 (-1 - 1), 0 at phase 0
+// --- DDS core, shared (inlined) by the oscillator, modulator, PWM modulator and V/F ---
+// Waveform at the phase, q15 (-1 - 1); every waveform is 0 at phase 0 and rises
+static inline __attribute__((always_inline)) int32_t OscWave(const Osc_t *p, uint32_t ph) {
     if (p->wave == MIMIC_OSC_WAVE_SINE) {
+        const int32_t *t = dsp_work.sine_q15;
         uint32_t i    = ph >> (32 - OSC_SEG_BITS);
         int32_t  frac = (int32_t)((ph >> (32 - OSC_SEG_BITS - OSC_FRAC_BITS)) & ((1 << OSC_FRAC_BITS) - 1));
-        w = t[i] + (((t[i + 1] - t[i]) * frac) >> OSC_FRAC_BITS);   // |diff| < 805
-    } else if (p->wave == MIMIC_OSC_WAVE_TRIANGLE) {
+        return t[i] + (((t[i + 1] - t[i]) * frac) >> OSC_FRAC_BITS);   // |diff| < 805
+    }
+    if (p->wave == MIMIC_OSC_WAVE_TRIANGLE) {
         int32_t v = (int32_t)(ph + 0x40000000u);   // a quarter period ahead: |v| falls, rises
-        w = ((v ^ (v >> 31)) >> 15) - 32768;       // 0 at phase 0, +1 at 1/4, -1 at 3/4
-    } else if (p->wave == MIMIC_OSC_WAVE_SQUARE) {
-        w = ((int32_t)ph >= 0) ? 32767 : -32767;   // high in the first half, like the sine
-    } else {
-        w = (int32_t)ph >> 16;                     // sawtooth: rises from -1 to 1, 0 at phase 0
+        return ((v ^ (v >> 31)) >> 15) - 32768;    // 0 at phase 0, +1 at 1/4, -1 at 3/4
     }
-    int32_t y = (w * p->amp_raw_fx3 + (1 << (Q15_FRAC_BITS - 1))) >> Q15_FRAC_BITS;
+    if (p->wave == MIMIC_OSC_WAVE_SQUARE) {
+        return ((int32_t)ph >= 0) ? 32767 : -32767;   // high in the first half, like the sine
+    }
+    return (int32_t)ph >> 16;                      // sawtooth: rises from -1 to 1, 0 at phase 0
+}
 
+// k (x - Vref): FM in phase increments (VCO, V/F) or amplitude (modulator); |d * mant| < 2^30
+static inline __attribute__((always_inline)) int32_t OscK(const Osc_t *p, int32_t x_raw_fx3) {
+    int32_t kd = ClampI32(ToVrefFx3(x_raw_fx3) * p->k_mant, p->k_lim);
+    return (kd << p->k_ls) >> p->k_rs;                                   // |kd| <= 2^30
+}
+
+// Advances the phase by f0 + kd, limited to 0 - fs / 2
+static inline __attribute__((always_inline)) void OscAdvanceFm(Osc_t *p, uint32_t ph, int32_t kd) {
     int32_t inc = (int32_t)p->inc;
-    if (p->type == MIMIC_OSC_VCO) {
-        // f = f0 + k (x - Vref), limited to 0 - fs / 2
-        int32_t fm = ClampI32(ToVrefFx3(x_raw_fx3) * p->k_mant, p->k_lim);   // |d * mant| < 2^30
-        fm = (fm << p->k_ls) >> p->k_rs;                                     // |fm| <= 2^30
-        inc = (fm > 0 && inc > OSC_INC_MAX - fm) ? OSC_INC_MAX : inc + fm;
-        if (inc < 0) inc = 0;
-    }
+    inc = (kd > 0 && inc > OSC_INC_MAX - kd) ? OSC_INC_MAX : inc + kd;
+    if (inc < 0) inc = 0;
     p->phase = ph + (uint32_t)inc;
+}
 
+// Oscillator / VCO: y = Vref + A wave(phase); f = f0 + k (x - Vref) (k = 0: fixed frequency)
+static inline __attribute__((always_inline)) int32_t ProcessOscillator(int32_t x_raw_fx3) {
+    Osc_t *p = &dsp_ctx.osc;
+    uint32_t ph = p->phase;
+    int32_t  w  = OscWave(p, ph);
+    int32_t  y  = (w * p->amp_raw_fx3 + (1 << (Q15_FRAC_BITS - 1))) >> Q15_FRAC_BITS;
+    if (p->k_mant != 0) OscAdvanceFm(p, ph, OscK(p, x_raw_fx3));
+    else                p->phase = ph + p->inc;
     return FromVrefFx3(y);
+}
+
+// Balanced modulator: y = Vref + (A + k (x - Vref)) wave(phase); A = 0: DSB (ring)
+static inline __attribute__((always_inline)) int32_t ProcessModulator(int32_t x_raw_fx3) {
+    Osc_t *p = &dsp_ctx.osc;
+    uint32_t ph = p->phase;
+    int32_t  w  = OscWave(p, ph);
+    int32_t  a  = ClampI32(p->amp_raw_fx3 + OscK(p, x_raw_fx3), 65535);   // |w * a| < 2^31
+    int32_t  y  = (w * a + (1 << (Q15_FRAC_BITS - 1))) >> Q15_FRAC_BITS;
+    p->phase = ph + p->inc;
+    return FromVrefFx3(y);
+}
+
+// PWM modulator (natural sampling): HIGH while x - Vref is above the carrier (digital route)
+static inline __attribute__((always_inline)) int32_t ProcessPwmModulator(int32_t x_raw_fx3) {
+    Osc_t *p = &dsp_ctx.osc;
+    uint32_t ph = p->phase;
+    int32_t  c  = (OscWave(p, ph) * p->amp_raw_fx3 + (1 << (Q15_FRAC_BITS - 1))) >> Q15_FRAC_BITS;
+    p->phase = ph + p->inc;
+    return (ToVrefFx3(x_raw_fx3) > c) ? RAW_MAX_FX3 : 0;
+}
+
+// V/F converter: square (50 % duty) at f = f0 + k (x - Vref) (digital route)
+static inline __attribute__((always_inline)) int32_t ProcessVfConverter(int32_t x_raw_fx3) {
+    Osc_t *p = &dsp_ctx.osc;
+    uint32_t ph = p->phase;
+    OscAdvanceFm(p, ph, OscK(p, x_raw_fx3));
+    return ((int32_t)ph >= 0) ? RAW_MAX_FX3 : 0;
+}
+
+// Index of the lowest set bit (de Bruijn): the pink row to renew. In RAM, like every table
+// the ISR reads.
+static uint8_t noise_debruijn[32] = {
+    0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
+    31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9
+};
+
+// Noise generator: white (uniform, peak A) or pink (Voss-McCartney, rms A / 3)
+static inline __attribute__((always_inline)) int32_t ProcessNoise(void) {
+    Noise_t *p = &dsp_ctx.noise;
+    uint32_t r = p->rng;
+    r ^= r << 13;  r ^= r >> 17;  r ^= r << 5;
+    p->rng = r;
+    int32_t w = (int32_t)r >> 16;                  // white, q15
+    if (p->color == MIMIC_NOISE_PINK) {
+        uint32_t c = ++p->count;
+        uint32_t k = noise_debruijn[((c & (0u - c)) * 0x077CB531u) >> 27];
+        if (k >= NOISE_ROWS) k = NOISE_ROWS - 1;
+        int32_t v = (int16_t)r;                    // the new row, from the other half of r
+        p->sum += v - p->rows[k];
+        p->rows[k] = v;
+        w = ClampI32(((p->sum + w) * NOISE_PINK_GAIN) >> 8, 32767);   // |sum + w| < 2^19
+    }
+    return FromVrefFx3((w * p->amp_raw_fx3 + (1 << (Q15_FRAC_BITS - 1))) >> Q15_FRAC_BITS);
 }
 
 // Slew-rate limiter: the output moves toward x by at most max_step per sample
@@ -1028,23 +1109,40 @@ static void ConfigureTrueRms(const uint8_t *p) {
     memcpy(dsp_work.sqrt_q16, sqrt_1pf_q16, sizeof(sqrt_1pf_q16));
 }
 
-static void ConfigureOscillator(const uint8_t *p) {
+// DDS settings: inc (f0), amplitude, k = mant * 2^exp (mant 0: none), waveform
+static void ConfigureDds(uint32_t inc, int32_t amp, int32_t k_mant, int32_t k_exp, uint8_t wave) {
     Osc_t *c = &dsp_ctx.osc;
-    uint32_t inc = ((uint32_t)ParseU16(p + 2) << 16) | ParseU16(p + 4);
-    int32_t  amp = ParseS16(p + 6);
-    int32_t  exp = (int8_t)p[10];
-
-    c->type        = (p[0] == MIMIC_OSC_VCO) ? MIMIC_OSC_VCO : MIMIC_OSC_FIXED;
-    c->wave        = (p[1] <= MIMIC_OSC_WAVE_SAWTOOTH) ? p[1] : MIMIC_OSC_WAVE_SINE;
+    c->wave        = (wave <= MIMIC_OSC_WAVE_SAWTOOTH) ? wave : MIMIC_OSC_WAVE_SINE;
     c->inc         = (inc > OSC_INC_MAX) ? OSC_INC_MAX : inc;
     c->amp_raw_fx3 = (amp < 0) ? 0 : amp;
-    c->k_mant      = ParseS16(p + 8);
-    if (exp > 4)   exp = 4;
-    if (exp < -16) exp = -16;
-    c->k_ls  = (exp > 0) ? exp : 0;
-    c->k_rs  = (exp < 0) ? -exp : 0;
+    c->k_mant      = k_mant;
+    if (k_exp > 4)   k_exp = 4;
+    if (k_exp < -16) k_exp = -16;
+    c->k_ls  = (k_exp > 0) ? k_exp : 0;
+    c->k_rs  = (k_exp < 0) ? -k_exp : 0;
     c->k_lim = OSC_FM_LIM >> c->k_ls;
-    memcpy(dsp_work.sine_q15, sine_q15, sizeof(sine_q15));
+    if (c->wave == MIMIC_OSC_WAVE_SINE) memcpy(dsp_work.sine_q15, sine_q15, sizeof(sine_q15));
+}
+
+// Oscillator, modulator, PWM: [0] waveform, [1-4] inc, [5-6] amplitude, [7-8] k mant, [9] k exp
+static void ConfigureOscillator(const uint8_t *p) {
+    uint32_t inc = ((uint32_t)ParseU16(p + 1) << 16) | ParseU16(p + 3);
+    ConfigureDds(inc, ParseS16(p + 5), ParseS16(p + 7), (int8_t)p[9], p[0]);
+}
+
+// V/F converter: [0-3] inc (f0), [4-5] k mant, [6] k exp (square output, no waveform)
+static void ConfigureVfConverter(const uint8_t *p) {
+    uint32_t inc = ((uint32_t)ParseU16(p + 0) << 16) | ParseU16(p + 2);
+    ConfigureDds(inc, 0, ParseS16(p + 4), (int8_t)p[6], MIMIC_OSC_WAVE_SQUARE);
+}
+
+// Noise: [0] color, [1-2] amplitude
+static void ConfigureNoise(const uint8_t *p) {
+    Noise_t *c = &dsp_ctx.noise;
+    int32_t amp = ParseS16(p + 1);
+    c->color       = (p[0] == MIMIC_NOISE_PINK) ? MIMIC_NOISE_PINK : MIMIC_NOISE_WHITE;
+    c->amp_raw_fx3 = (amp < 0) ? 0 : amp;
+    if (c->rng == 0) c->rng = NOISE_RNG_SEED;   // 0 after a mode change; kept on payload updates
 }
 
 void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
@@ -1140,7 +1238,17 @@ void MimicDSP_UpdateParameters(const MimicDSP_Config_t *config) {
             break;
 
         case MIMIC_MODE_ID_OSCILLATOR:
+        case MIMIC_MODE_ID_MODULATOR:
+        case MIMIC_MODE_ID_PWM_MODULATOR:
             ConfigureOscillator(p);
+            break;
+
+        case MIMIC_MODE_ID_VF_CONVERTER:
+            ConfigureVfConverter(p);
+            break;
+
+        case MIMIC_MODE_ID_NOISE:
+            ConfigureNoise(p);
             break;
 
         case MIMIC_MODE_ID_SLEW_RATE_LIMITER: {
@@ -1211,6 +1319,10 @@ static inline __attribute__((always_inline)) uint16_t MimicDSP_ProcessSample(int
             case MIMIC_MODE_ID_SAMPLE_AND_HOLD:     dsp_out = ProcessSampleAndHold(x_raw_fx3); break;
             case MIMIC_MODE_ID_DELAY:               dsp_out = ProcessDelay(x_raw_fx3); break;
             case MIMIC_MODE_ID_OSCILLATOR:          dsp_out = ProcessOscillator(x_raw_fx3); break;
+            case MIMIC_MODE_ID_MODULATOR:           dsp_out = ProcessModulator(x_raw_fx3); break;
+            case MIMIC_MODE_ID_PWM_MODULATOR:       dsp_out = ProcessPwmModulator(x_raw_fx3); break;
+            case MIMIC_MODE_ID_VF_CONVERTER:        dsp_out = ProcessVfConverter(x_raw_fx3); break;
+            case MIMIC_MODE_ID_NOISE:               dsp_out = ProcessNoise(); break;
             default:                                dsp_out = x_raw_fx3; break;
         }
     }

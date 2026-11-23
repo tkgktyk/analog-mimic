@@ -63,14 +63,16 @@
 #define MIMIC_LOG_TYPE_LOG                0 // Vref + slope * log10((x - Vref) / unit)
 #define MIMIC_LOG_TYPE_ANTILOG            1 // unit * 10^((x - Vref) / slope)      (0 V based output)
 
-#define MIMIC_OSC_FIXED                   0 // fixed frequency f0: Vref + amplitude * wave(2 pi f0 t)
-#define MIMIC_OSC_VCO                     1 // f = f0 + k * (x - Vref) (linear FM)
-
-// Waveforms of the oscillator (payload [1]; 0 at phase 0, rising; other values: sine)
+// (experimental) Waveforms of the oscillator, the modulator and the PWM modulator (payload [0];
+// 0 at phase 0, rising; other values: sine)
 #define MIMIC_OSC_WAVE_SINE               0
 #define MIMIC_OSC_WAVE_TRIANGLE           1
 #define MIMIC_OSC_WAVE_SQUARE             2 // +amplitude in the first half of the period
 #define MIMIC_OSC_WAVE_SAWTOOTH           3 // rises from -amplitude to +amplitude
+
+// (experimental) Noise colors (payload [0] of MIMIC_MODE_ID_NOISE)
+#define MIMIC_NOISE_WHITE                 0 // uniform within +/-amplitude
+#define MIMIC_NOISE_PINK                  1 // -3 dB/octave, rms amplitude / 3 (clipped beyond)
 
 #define MIMIC_POLARITY_POSITIVE           0
 #define MIMIC_POLARITY_NEGATIVE           1
@@ -211,11 +213,16 @@
 #define MIMIC_MODE_ID_SLEW_RATE_LIMITER   0x0A // (experimental) Slew rate limiter
 #define MIMIC_MODE_ID_SAMPLE_AND_HOLD     0x0B // (experimental) Sample & hold / track & hold
 #define MIMIC_MODE_ID_DELAY               0x0C // (experimental) Digital delay line
-#define MIMIC_MODE_ID_OSCILLATOR          0x0D // (experimental) Sine oscillator / VCO (DDS)
+#define MIMIC_MODE_ID_OSCILLATOR          0x0D // (experimental) Function generator / VCO (DDS)
 #define MIMIC_MODE_ID_MULTIPLIER          0x0E // (experimental) Multiplier: squarer / square rooter
 #define MIMIC_MODE_ID_TRUE_RMS            0x0F // (experimental) True RMS-to-DC converter
 
-#define MIMIC_MODE_MAX_ID                 MIMIC_MODE_ID_TRUE_RMS
+#define MIMIC_MODE_ID_MODULATOR           0x10 // (experimental) Balanced modulator: AM / ring (DSB)
+#define MIMIC_MODE_ID_PWM_MODULATOR       0x11 // (experimental) PWM modulator, GPIO output
+#define MIMIC_MODE_ID_VF_CONVERTER        0x12 // (experimental) V/F converter, GPIO output
+#define MIMIC_MODE_ID_NOISE               0x13 // (experimental) Noise generator: white / pink
+
+#define MIMIC_MODE_MAX_ID                 MIMIC_MODE_ID_NOISE
 
 
 // =========================================================
@@ -299,12 +306,18 @@
 //                      in a squarer and a square-rooter module gives |x - Vref| back.
 //   TRUE_RMS           (experimental) [0-1] 1 - a mant12, [2] 1 - a sh (13 - 32): averaging
 //                      m += (1 - a) * ((x - Vref)^2 - m) per sample, y = sqrt(m), gain 1
-//   OSCILLATOR         (experimental) [0] type (MIMIC_OSC_*), [1] waveform (MIMIC_OSC_WAVE_*;
-//                      other values: sine), [2-5] phase increment uint32 (< 2^31):
-//                      f0 = inc * fs / 2^32, [6-7] amplitude raw_fx3 (peak, >= 0),
-//                      vco: [8-9] k mant int16, [10] k exp int8 (-16 - 4): the phase
-//                      increment changes by (x - Vref) * mant * 2^exp (0 - fs / 2).
+//   OSCILLATOR         (experimental) [0] waveform (MIMIC_OSC_WAVE_*), [1-4] phase increment
+//                      uint32 (< 2^31): f0 = inc * fs / 2^32, [5-6] amplitude raw_fx3 (peak, >= 0),
+//                      [7-8] k mant int16, [9] k exp int8 (-16 - 4): the phase increment changes
+//                      by k * (x - Vref), k = mant * 2^exp (0 - fs / 2); mant 0: fixed frequency.
 //                      The phase continues when the payload changes (0 on mode entry).
+//   MODULATOR          (experimental) as OSCILLATOR, with k as a gain (raw_fx3 per raw_fx3):
+//                      y = Vref + (amplitude + k * (x - Vref)) * wave; amplitude 0: DSB (ring)
+//   PWM_MODULATOR      (experimental) [0] carrier waveform (MIMIC_OSC_WAVE_*), [1-4] phase
+//                      increment, [5-6] amplitude (full scale): HIGH while x - Vref > carrier
+//   VF_CONVERTER       (experimental) [0-3] phase increment (f0 at Vref), [4-5] k mant int16,
+//                      [6] k exp int8: square at f = f0 + k * (x - Vref), as the VCO
+//   NOISE              (experimental) [0] color (MIMIC_NOISE_*), [1-2] amplitude raw_fx3
 //   SLEW_RATE_LIMITER  (experimental) [0-1] max change per sample raw_fx3 (>= 0)
 //   SAMPLE_AND_HOLD    (experimental) [0-1] period, [2-3] track (samples, uint16)
 //   DELAY              (experimental) [0-1] delay (samples, uint16)
