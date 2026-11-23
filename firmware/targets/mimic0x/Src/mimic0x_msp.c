@@ -65,8 +65,9 @@
     
     // I2C address jumpers (closed = GND, internal pull-ups)
     #define ADDR_JP_PORT      GPIOB
-    #define ADDR_A0_PIN       GPIO_PIN_3    // PB3 -> address bit 0
-    #define ADDR_A1_PIN       GPIO_PIN_4    // PB4 -> address bit 1
+    // The silk reads A1 (upper pad, PB3) above A0 (lower pad, PB4), like a binary number
+    #define ADDR_A1_PIN       GPIO_PIN_3    // PB3 -> address bit 1
+    #define ADDR_A0_PIN       GPIO_PIN_4    // PB4 -> address bit 0
 
   #endif
 #else
@@ -642,7 +643,7 @@ static void MX_OPA_Init(void)
  * TIM2 update resets TIM1; TIM1 TRGO clocks TIM15, which divides it by 2, so PA2
  * (TIM15_CH1, AF0) carries a 100 kHz square wave that toggles at every sample.
  * In the normal build the timers are not started and PA2 is left unconfigured.
- * PB3 is not used: on mimic01 it is an I2C address jumper (A0).
+ * PB3 is not used: on mimic01 it is an I2C address jumper (A1).
  */
 static void MX_TestPad_Init(void)
 {
