@@ -136,6 +136,7 @@ The module is an I²C target at address 0x40 - 0x43 (7-bit), selected by two sol
 | 0x11 | `GLOBAL_DECIMATION_N` | R/W | uint8 | Processing rate = 200 kHz / 2^N, N = 0 - 16 (larger values are clamped). |
 | 0x12 - 0x13 | `GLOBAL_OFFSET` | R/W | int16 `raw_fx3` | User output offset. |
 | 0x14 - 0x15 | `GLOBAL_VREF` | R/W | int16 `raw_fx3` | Common reference voltage (default VDD / 2). |
+| 0x16 | `GLOBAL_TEST_PAD` | R/W | uint8 | Signal on the test pad (experimental, see [experimental_modes.md](experimental_modes.md)). |
 | 0x20 | `MODE_ID` | R/W | uint8 | Active mode (see below). |
 | 0x21 - 0x2F | `MODE_PAYLOAD` | R/W | block | Mode parameters. |
 | 0x30 - 0x31 | `NVM_GAIN` | R/W | uint16 `uq1_15` | Output gain calibration. |
@@ -212,7 +213,7 @@ Digital output route (GPIO). Window: HIGH when the input is above the upper or b
 ### 0x05 Clipper
 Limits the input to the lower - upper range (absolute voltages).
 
-* **Hard:** passes the input unchanged between the limits.
+* **Hard:** passes the input unchanged between the limits. With both limits at the same voltage, the output stays at that voltage whatever the input: a constant voltage source that does not change Vref, with the output calibration applied as for any signal (`setConstantVoltage()` in the library).
 * **Soft:** a cubic curve like the smooth saturation of a diode or transistor limiter. With the center $c$ = (upper + lower) / 2, $h$ = upper − $c$ and $d = x - c$: $y = c + d - \frac{4 d^3}{27 h^2}$ for $|d| < 1.5 h$, and the limit beyond. The gain is 1 at the center and the curve meets the limit with zero slope.
 
 ### 0x06 Rectifier
