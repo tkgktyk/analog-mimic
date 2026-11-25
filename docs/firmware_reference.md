@@ -220,7 +220,7 @@ Limits the input to the lower - upper range (absolute voltages).
 Folds the signal at Vref. Full-wave positive: $V_{ref} + |x - V_{ref}|$; half-wave positive: $\max(x, V_{ref})$; negative polarity mirrors both.
 
 ### 0x07 Envelope follower
-Follows the peak of the input above Vref (positive) or below Vref (negative) and decays by the decay factor $d$ per sample. $1 - d$ is sent as a 12-bit mantissa and a shift, so time constants from a few samples to minutes have the same resolution; $1 - d = 0$ holds the peak. The tracked magnitude keeps 15 fractional bits below `raw_fx3`, so long decays continue all the way down instead of stopping at the truncation. The output is Vref plus the tracked magnitude for both polarities.
+Follows the peak of the input above Vref (positive) or below Vref (negative) and decays by the decay factor $d$ per sample. $1 - d$ is sent as a 12-bit mantissa and a shift, so time constants from a few samples to minutes have the same resolution; $1 - d = 0$ holds the peak. The tracked magnitude keeps 15 fractional bits below `raw_fx3`, so long decays continue all the way down instead of stopping at the truncation. The output is on the side of the tracked peak, as a peak detector with the diode reversed: Vref + magnitude (positive), Vref − magnitude (negative). (Firmware 20261123 and earlier output Vref + magnitude for both polarities.)
 
 ### 0x09 Integrator / differentiator
 The op-amp integrator (input R, feedback C, with a leak resistor across the capacitor) and differentiator (input C with a series resistor, feedback R). Both use one update, with $u$ the input relative to Vref for the integrator and its change per sample for the differentiator:

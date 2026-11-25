@@ -530,7 +530,9 @@ static inline __attribute__((always_inline)) int32_t ProcessComparator(int32_t x
     return p->wave_last_raw_fx3;
 }
 
-// Envelope: tracks the swing from Vref and decays toward Vref
+// Envelope: tracks the swing from Vref and decays toward Vref. The output is on the side
+// of the tracked peak (Vref + magnitude, or Vref - magnitude for the negative polarity),
+// as a peak detector with the diode reversed holds the negative peak
 static inline __attribute__((always_inline)) int32_t ProcessEnvelopeFollower(int32_t x_raw_fx3) {
     Envelope_t *p = &dsp_ctx.envelope;
 
@@ -545,8 +547,9 @@ static inline __attribute__((always_inline)) int32_t ProcessEnvelopeFollower(int
         // state *= decay as state -= (1 - decay) * state: e < 2^15, mant < 2^12, ls <= 3
         p->state -= (((e * p->decay_c.mant) << p->decay_c.ls) + p->decay_c.half) >> p->decay_c.rs;
     }
-    // magnitude above Vref (same for both polarities)
-    return FromVrefFx3((p->state + (1 << (ENV_FRAC_BITS - 1))) >> ENV_FRAC_BITS);
+    int32_t y = (p->state + (1 << (ENV_FRAC_BITS - 1))) >> ENV_FRAC_BITS;
+    if (p->polarity == MIMIC_POLARITY_NEGATIVE) y = -y;
+    return FromVrefFx3(y);
 }
 
 // Clipper. Hard: passes x between the limits. Soft (cubic, d = x - center, h = upper - center):

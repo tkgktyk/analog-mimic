@@ -49,7 +49,7 @@ $$y = \begin{cases} V_{ref} + (x - \text{upper}) & x > \text{upper} \\ V_{ref} &
 Small signals and noise around the center are removed (for example the backlash of a control loop or the noise of a sensor at rest); larger signals pass, moved toward Vref by the limit. An upper limit below the lower one is taken as equal to the lower one.
 
 ### 0x08 LOG
-Logarithmic amplifier: $y = V_{ref} + \text{slope} \cdot \log_{10}((x - V_{ref}) / \text{unit})$: the input is a magnitude above Vref, and the output is Vref when $x - V_{ref}$ = unit. Set Vref to 0 V for a sensor whose zero is 0 V (a photodiode, for example); keep Vref equal to that of a preceding envelope follower or rectifier to get its magnitude in decades. Antilogarithmic: $y = \text{unit} \cdot 10^{(x - V_{ref}) / \text{slope}}$, a magnitude from 0 V. Implemented with per-mode tables (64 segments per octave) built when the mode is configured, and linear interpolation.
+Logarithmic amplifier: $y = V_{ref} + \text{slope} \cdot \log_{10}((x - V_{ref}) / \text{unit})$: the input is a magnitude above Vref, and the output is Vref when $x - V_{ref}$ = unit. Set Vref to 0 V for a sensor whose zero is 0 V (a photodiode, for example); keep Vref equal to that of a preceding envelope follower or rectifier (positive polarity) to get its magnitude in decades. Antilogarithmic: $y = \text{unit} \cdot 10^{(x - V_{ref}) / \text{slope}}$, a magnitude from 0 V. Implemented with per-mode tables (64 segments per octave) built when the mode is configured, and linear interpolation.
 
 With the supply headroom (about 0.1 V from each rail), a 0 V based input or output spans about 1.7 decades at VDD = 5 V.
 
