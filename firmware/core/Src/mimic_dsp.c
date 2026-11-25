@@ -64,6 +64,7 @@ static volatile uint32_t mimic_output_slot = MIMIC_ADC_MID_VALUE;
 // truncation of state * coefficient does not accumulate (no dead band, smooth decay).
 #define INTEG_FRAC_BITS     14                                  // integrator output m: raw_vref_fx3 << 14
 #define INTEG_M_LIM         ((1 << 30) - 1)                     // |m| < 2^30: |y| < 2^16 raw_fx3 (+/-8192 LSB)
+                                                                // (m itself: the DAC range, m_lo - m_hi)
 #define INTEG_C_SH_MIN      11                                  // c = 1 (2048 >> 11): no band limit
 #define INTEG_C_SH_MAX      32                                  // c >= 2^-21: time constants up to about 10 s
 #define ENV_FRAC_BITS       15                                  // envelope state: raw_vref_fx3 << 15
@@ -267,14 +268,17 @@ typedef struct {
 
 typedef struct {
     uint8_t  type;            // Config: MIMIC_INTEGRATOR_*
-    int32_t  k_mant;          // Config: K mantissa q0_15 (K = mant * 2^(exp - 15))
-    int32_t  k_shift;         // Config: exp - 1: K * u in m units = (u * mant) * 2^k_shift
-    int32_t  k_lim;           // Config: |u * mant| limit before a left shift (target clamp)
-    int32_t  k_half;          // Config: rounding of a right shift
+    int32_t  g_mant;          // Config: input gain G mantissa (< 2^15)
+    int32_t  g_shift;         // Config: G * u in m units = (u * g_mant) * 2^(g_shift - g_rshift)
+    int32_t  g_rshift;        // Config: right shift 0 - 30 (g_shift 0 - 16: one of them is 0)
+    int32_t  g_lim;           // Config: |u * g_mant| limit before a left shift
     int32_t  c_mant;          // Config: c = c_mant / 2^(c_s + 13) (0: integrator without leak)
     int32_t  c_s;             // Config: 0 - 19
+    int32_t  m_lo;            // Config: m limits: the DAC range 0 - 4095 relative to Vref,
+    int32_t  m_hi;            //         as the op-amp output stops at the supply rail
     int32_t  m;               // State: output, raw_vref_fx3 << INTEG_FRAC_BITS
-    int32_t  r;               // State: remainder of the last right shift (exact accumulation)
+    int32_t  r;               // State: remainder of the input term (exact accumulation)
+    int32_t  r_c;             // State: remainder of the leak term
     int32_t  last_d;          // State: differentiator, previous x - Vref
 } Integ_t;
 
@@ -640,14 +644,17 @@ static inline __attribute__((always_inline)) uint32_t SqrtLut(uint32_t v) {
 
 // Integrator / differentiator: the analog op-amp integrator (input R, feedback C with a leak
 // R in parallel) and differentiator (input C with a series R, feedback R). One update
-//   m <- m + c * (K * u - m)       (leaky integrator: u = x - Vref, K = DC gain)
-//   m <- m + K * u                 (integrator without leak: c = 0, K = Ts / tau_i)
+//   m <- m + G * u - c * m         (leaky integrator: u = x - Vref, G = c * K, K = DC gain)
+//   m <- m + G * u                 (integrator without leak: c = 0, G = K = Ts / tau_i)
 //                                  (differentiator: u = x[n] - x[n-1], K = tau_d * fs,
 //                                   c = band limit; c = 1: no limit)
-// m is the output (raw_vref_fx3 << INTEG_FRAC_BITS). The remainder of every right shift is
-// carried to the next sample, so a small c or K accumulates exactly: no dead band even with
-// a time constant of seconds or a large DC gain. With a leak, (K u - m) enters at 2^13 m
-// units (1/2 raw_fx3, rounded), the only rounding (an output error below 1/32 LSB).
+// G * u and c * m are added separately, so only m itself is limited, to the DAC range as the
+// op-amp output stops at the supply rail: a large DC gain or a fast edge of the
+// differentiator reaches K * u as the analog circuit does, and a saturated integrator leaves
+// the rail as soon as the input turns. m is the output (raw_vref_fx3 << INTEG_FRAC_BITS). The remainder of every
+// right shift is carried to the next sample, so a small G or c accumulates exactly: no dead
+// band even with a time constant of seconds. The leak takes m at 2^13 m units (1/4 raw_fx3,
+// rounded), the only rounding (an output error below 1/32 LSB).
 static inline __attribute__((always_inline)) int32_t ProcessIntegrator(int32_t x_raw_fx3) {
     Integ_t *p = &dsp_ctx.integ;
     int32_t d = ToVrefFx3(x_raw_fx3);                 // |d| < 2^15
@@ -656,28 +663,34 @@ static inline __attribute__((always_inline)) int32_t ProcessIntegrator(int32_t x
         u = d - p->last_d;                            // |u| < 2^15
         p->last_d = d;
     }
-    int32_t t = u * p->k_mant;                        // |t| < 2^30
-    int32_t m = p->m;
-    int32_t s, q;
+    int32_t t  = u * p->g_mant;                       // |t| < 2^30
+    int32_t m  = p->m;
+    int32_t s  = p->g_rshift;
+    int32_t q;
 
-    if (p->c_mant == 0) {
-        // Without leak: m += t * 2^k_shift (k_shift = -30 - 0)
-        s  = -p->k_shift;
-        t += p->r;                                    // |r| < 2^s: |t| < 2^31
-    } else {
-        int32_t ks = p->k_shift;                      // target = K * u, |target| < 2^30
-        int32_t target = (ks >= 0) ? (ClampI32(t, p->k_lim) << ks) : ((t + p->k_half) >> -ks);
-        // m += c * (target - m), c = c_mant / 2^(c_s + 13): |e >> 13| < 2^18, c_mant <= 2^13
-        s = p->c_s;
-        t = ((target - m + (1 << 12)) >> 13) * p->c_mant + p->r;   // rounded: |t| < 2^31
+    if (s != 0) {                                     // G * u = t / 2^s: exact with r
+        t += p->r;                                    // 0 <= r < 2^s: |t| < 2^31
+        q  = t >> s;
+        p->r = t - (q << s);
+    } else {                                          // |q| < 2^30
+        q = ClampI32(t, p->g_lim) << p->g_shift;
     }
-    q = t >> s;
-    p->r = t - (q << s);                              // 0 <= r < 2^s
-    m += q;
-    m = ClampI32(m, INTEG_M_LIM);
+    if (p->c_mant != 0) {
+        // m -= c * m, c = c_mant / 2^(c_s + 13): |m >> 13| < 2^17, c_mant <= 2^13
+        // ((m >> 12) + 1) >> 1 = (m + 2^12) >> 13 (floor), without the constant 2^12
+        int32_t cs = p->c_s;
+        int32_t tc = (((m >> 12) + 1) >> 1) * p->c_mant + p->r_c;   // |tc| < 2^31
+        int32_t qc = tc >> cs;
+        p->r_c = tc - (qc << cs);                     // 0 <= r_c < 2^cs
+        m -= qc;                                      // c <= 1: |m| < 2^30
+    }
+    m += q;                                           // |m| < 2^31
+    if (m > p->m_hi) m = p->m_hi;                     // |m_lo|, |m_hi| < 2^29
+    if (m < p->m_lo) m = p->m_lo;
     p->m = m;
+    // m_lo - m_hi keep y within the DAC range: no further clamp
     int32_t y = (m + (1 << (INTEG_FRAC_BITS - 1))) >> INTEG_FRAC_BITS;
-    return FromVrefFx3(ClampI32(y, OUT_GUARD_RAW_FX3));
+    return FromVrefFx3(y);
 }
 
 // Square: y = d^2 / unit = round(d^2 * inv_m / 2^inv_t), exact rounding within uint32.
@@ -1067,12 +1080,37 @@ static void ConfigureIntegrator(const uint8_t *p) {
         if (csh < 13) { cmant <<= (13 - csh); csh = 13; }   // c = cmant / 2^(c_s + 13)
         c->c_s = csh - 13;
     }
-    c->k_mant  = mant;
-    c->k_shift = ks;
-    c->k_lim   = (ks > 0) ? (INTEG_M_LIM >> ks) : INTEG_M_LIM;
-    c->k_half  = (ks < 0) ? ((1 << -ks) >> 1) : 0;
+    // Input gain G: K * u in m units = (u * mant) * 2^ks
+    int32_t gmant = mant, gsh = ks;                    // without leak: G = K (ks <= 0)
+    if (cmant != 0 && mant != 0) {
+        // G = c * K = (mant * cmant) * 2^(ks - c_s - 13), normalized to [2^14, 2^15)
+        int32_t prod = mant * cmant;                   // < 2^28
+        gsh = ks - c->c_s - 13;
+        while (prod < (1 << 14)) { prod <<= 1; gsh--; }
+        int32_t n = 0;
+        while ((prod >> n) >= (1 << 15)) n++;
+        if (n > 0) {
+            gmant = (prod + (1 << (n - 1))) >> n;      // rounded (relative error < 2^-15)
+            gsh  += n;
+            if (gmant >= (1 << 15)) { gmant >>= 1; gsh++; }
+        } else {
+            gmant = prod;
+        }
+        if (gsh > 16) gsh = 16;                        // G * 1 LSB already beyond the limit
+        if (gsh < -30) {                               // G < 2^-31: no effect
+            gmant = (gsh < -45) ? 0 : (gmant >> (-30 - gsh));
+            gsh = -30;
+        }
+    }
+    c->g_mant   = gmant;
+    c->g_shift  = (gsh > 0) ? gsh : 0;
+    c->g_rshift = (gsh < 0) ? -gsh : 0;
+    c->g_lim    = (gsh > 0) ? (INTEG_M_LIM >> gsh) : INTEG_M_LIM;
+    c->m_lo    = (0 - pipeline.vref_raw_fx3) * (1 << INTEG_FRAC_BITS);           // Vref: set before
+    c->m_hi    = (RAW_MAX_FX3 - pipeline.vref_raw_fx3) * (1 << INTEG_FRAC_BITS);
     c->c_mant  = cmant;
     c->r       = 0;
+    c->r_c     = 0;
 }
 
 // Payload: [0] type, [1-2] unit raw_fx3 (> 0)
