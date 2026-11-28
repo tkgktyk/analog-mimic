@@ -65,7 +65,6 @@ BUILD_DIR = build/$(BOARD_NAME)$(ENGINE_SUFFIX)$(DAC_SUFFIX)
 # Library and Framework Paths (Adjust to your environment)
 # ========================================================
 CORE_DIR       = ../../core
-ARDUINO_DIR    = ../../../../analog-mimic-arduino
 HAL_DRIVER_DIR = ../../lib/PY32F071_Firmware/Drivers/PY32F071_HAL_Driver
 CMSIS_DIR      = ../../lib/PY32F071_Firmware/Drivers/CMSIS
 
@@ -139,18 +138,9 @@ LDFLAGS = $(MCU) -specs=nano.specs -flto -T$(LDSCRIPT) $(LIBS) -Wl,--gc-sections
 # ========================================================
 # Build Rules
 # ========================================================
-.PHONY: all clean release deploy_header dac cpu 00 01
+.PHONY: all clean release dac cpu 00 01
 
-all: deploy_header $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
-
-# Automatically deploy the register definition header to the adjacent Arduino library repository
-deploy_header:
-	@if [ -d $(ARDUINO_DIR)/src ]; then \
-	  cp $(CORE_DIR)/Inc/mimic_registers.h $(ARDUINO_DIR)/src/mimic_registers.h; \
-	  echo "✓ mimic_registers.h deployed to $(ARDUINO_DIR)/src/"; \
-	else \
-	  echo "- analog-mimic-arduino not found; skipping header deployment"; \
-	fi
+all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
 
 # Output timing build: the output is replaced by a full-scale square wave while the DSP
 # keeps running, and the sampling reference clock is driven on the PA2 test pad.
